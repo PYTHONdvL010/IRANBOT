@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from urllib.parse import urlparse
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -288,27 +289,108 @@ def valid_url(value: str) -> bool:
         return False
 
 
-async def finish_panel(context, message, flow):
-    # Demo connection test: validates the address/credentials locally.
-    # No real panel API call is made in this demo version.
-    address = flow["address"]
-    username = flow["username"]
-    password = flow["password"]
-    ok = valid_url(address) and bool(username.strip()) and bool(password.strip())
-    status = "connected" if ok else "error"
-    name = f"{PANEL_TYPES[flow['panel_type']]} #{flow.get('name_suffix','Panel')}"
+async def panel_api_login(panel_type: str, address: str, username: str, password: str):
+    """Real authentication test for Marzban, PasarGuard and 3x-ui."""
+    base = address.strip().rstrip("/")
+    timeout = httpx.Timeout(15.0, connect=8.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=True) as client:
+        try:
+            if panel_type in ("marzban", "pasarguard"):
+                # Both panels expose the admin token endpoint as form-encoded OAuth2 password auth.
+                r = await client.post(
+                    f"{base}/api/admin/token",
+                    data={"username": username, "password": password, "grant_type": "password"},
+                )
+                if r.status_code in (401, 403):
+                    return False, "credentials"
+                if r.status_code >= 400:
+                    return False, f"http_{r.status_code}"
+                data = r.json()
+                token = data.get("access_token")
+                if not token:
+                    return False, "bad_response"
+                # Verify the returned token against the admin endpoint.
+                me = await client.get(f"{base}/api/admin", headers={"Authorization": f"Bearer {token}"})
+                if me.status_code in (401, 403):
+                    return False, "credentials"
+                if me.status_code >= 400:
+                    return False, f"http_{me.status_code}"
+                return True, "ok"
+
+            if panel_type == "3xui":
+                # Current 3x-ui uses POST /login and returns a session cookie.
+                r = await client.post(
+                    f"{base}/login",
+                    json={"username": username, "password": password},
+                )
+                # Some older builds expect form data instead of JSON.
+                if r.status_code >= 400 and r.status_code not in (401, 403):
+                    r = await client.post(
+                        f"{base}/login",
+                        data={"username": username, "password": password},
+                    )
+                if r.status_code in (401, 403):
+                    return False, "credentials"
+                if r.status_code >= 400:
+                    return False, f"http_{r.status_code}"
+                # A successful login should set the 3x-ui session cookie.
+                if not client.cookies:
+                    return False, "no_session"
+                status = await client.get(f"{base}/panel/api/server/status")
+                if status.status_code in (401, 403):
+                    return False, "credentials"
+                if status.status_code >= 400:
+                    return False, f"http_{status.status_code}"
+                return True, "ok"
+
+            return False, "unsupported"
+        except httpx.ConnectError:
+            return False, "connection"
+        except httpx.TimeoutException:
+            return False, "timeout"
+        except (httpx.HTTPError, ValueError):
+            return False, "bad_response"
+
+
+def panel_error_text(reason: str) -> str:
+    return {
+        "credentials": "❌ نام کاربری یا رمز عبور اشتباه است.",
+        "connection": "❌ اتصال به پنل برقرار نشد. آدرس یا دسترسی شبکه را بررسی کن.",
+        "timeout": "❌ زمان اتصال به پنل تمام شد.",
+        "no_session": "❌ ورود انجام شد ولی session پنل دریافت نشد.",
+        "bad_response": "❌ پاسخ API پنل معتبر نبود یا نسخه پنل سازگار نیست.",
+        "unsupported": "❌ نوع پنل پشتیبانی نمی‌شود.",
+    }.get(reason, f"❌ خطا در API پنل ({reason}).")
+
+
+async def save_panel_after_test(message, flow):
+    ok, reason = await panel_api_login(
+        flow["panel_type"], flow["address"], flow["username"], flow["password"]
+    )
+    if not ok:
+        await message.reply_text(panel_error_text(reason), reply_markup=cancel_keyboard())
+        return False
+
+    name = f"{PANEL_TYPES[flow['panel_type']]} Panel"
     with conn() as c:
-        pid = c.execute("""INSERT INTO panels(panel_type,name,address,username,password,status)
-                          VALUES(?,?,?,?,?,?)""", (flow["panel_type"],name,address,username,password,status)).lastrowid
-    if ok:
-        await message.reply_text(f"✅ تست دمو موفق بود.\n\nپنل {PANEL_TYPES[flow['panel_type']]} ثبت شد.\nشناسه پنل: #{pid}\n\n⚠️ این نسخه دمو است و هنوز به API واقعی پنل وصل نمی‌شود.", reply_markup=admin_menu())
-    else:
-        await message.reply_text("❌ اطلاعات پنل معتبر نیست. آدرس، username یا password را بررسی کن.", reply_markup=admin_menu())
+        pid = c.execute(
+            "INSERT INTO panels(panel_type,name,address,username,password,status) VALUES(?,?,?,?,?,?)",
+            (flow["panel_type"], name, flow["address"], flow["username"], flow["password"], "connected"),
+        ).lastrowid
+    await message.reply_text(
+        f"✅ پنل با موفقیت ثبت شد.\n\n"
+        f"نوع: {PANEL_TYPES[flow['panel_type']]}\n"
+        f"آدرس: {flow['address']}\n"
+        f"وضعیت: 🟢 Connected\n"
+        f"شناسه: #{pid}",
+        reply_markup=admin_menu(),
+    )
+    return True
 
 
 async def test_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer("در حال تست دمو...")
+    await q.answer("در حال اتصال به API پنل...")
     if not is_admin(q.from_user.id): return
     pid = int(q.data.split(":")[1])
     with conn() as c:
@@ -316,16 +398,22 @@ async def test_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not row:
         await q.edit_message_text("❌ پنل پیدا نشد.", reply_markup=admin_menu())
         return
-    pt,name,address,username,password = row
-    ok = valid_url(address) and bool(username) and bool(password)
-    status = "connected" if ok else "error"
+    pt, name, address, username, password = row
+    ok, reason = await panel_api_login(pt, address, username, password)
     with conn() as c:
-        c.execute("UPDATE panels SET status=? WHERE id=?", (status,pid))
+        c.execute("UPDATE panels SET status=? WHERE id=?", ("connected" if ok else "error", pid))
     if ok:
-        text = f"🧪 تست پنل #{pid}\n\nنوع: {PANEL_TYPES.get(pt,pt)}\nنام: {name}\nآدرس: {address}\n\n🟢 Demo Test: OK\n🔐 اطلاعات ورود: موجود\n\n⚠️ تست واقعی API در این نسخه فعال نیست."
+        text = (
+            f"🧪 تست پنل #{pid}\n\nنوع: {PANEL_TYPES.get(pt, pt)}\n"
+            f"نام: {name}\nآدرس: {address}\n\n🟢 API Login: موفق\n"
+            f"🔐 احراز هویت: موفق"
+        )
     else:
-        text = f"🧪 تست پنل #{pid}\n\n🔴 Demo Test: FAILED\n\nآدرس یا اطلاعات ورود نامعتبر است."
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ پنل‌ها", callback_data="admin_panels")]]))
+        text = f"🧪 تست پنل #{pid}\n\n{panel_error_text(reason)}"
+    await q.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ پنل‌ها", callback_data="admin_panels")]])
+    )
 
 
 async def delete_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -390,8 +478,9 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if flow["step"] == "password":
             flow["password"] = text
-            await finish_panel(context, update.message, flow)
-            context.user_data.pop("flow", None)
+            ok = await save_panel_after_test(update.message, flow)
+            if ok:
+                context.user_data.pop("flow", None)
             return
 
 
