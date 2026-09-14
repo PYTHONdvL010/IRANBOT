@@ -71,9 +71,33 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             balance INTEGER DEFAULT 0
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS settings(
+            key TEXT PRIMARY KEY,
+            value TEXT DEFAULT ''
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS payments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            order_id INTEGER,
+            amount INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            photo_file_id TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
         cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "panel_id" not in cols:
             c.execute("ALTER TABLE products ADD COLUMN panel_id INTEGER")
+        cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
+        if "data_limit_gb" not in cols:
+            c.execute("ALTER TABLE products ADD COLUMN data_limit_gb INTEGER DEFAULT 1")
+        if "expire_days" not in cols:
+            c.execute("ALTER TABLE products ADD COLUMN expire_days INTEGER DEFAULT 1")
+        order_cols = {r[1] for r in c.execute("PRAGMA table_info(orders)").fetchall()}
+        if "subscription" not in order_cols:
+            c.execute("ALTER TABLE orders ADD COLUMN subscription TEXT DEFAULT ''")
+        if "panel_username" not in order_cols:
+            c.execute("ALTER TABLE orders ADD COLUMN panel_username TEXT DEFAULT ''")
 
 
 def is_admin(user_id: int) -> bool:
@@ -97,6 +121,7 @@ def menu(user_id: int):
 def admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ افزودن محصول", callback_data="admin_add")],
+        [InlineKeyboardButton("💳 بخش مالی", callback_data="admin_finance")],
         [InlineKeyboardButton("🖥 پنل‌ها", callback_data="admin_panels")],
         [InlineKeyboardButton("📋 محصولات", callback_data="admin_products")],
         [InlineKeyboardButton("📦 سفارش‌ها", callback_data="admin_orders")],
@@ -106,6 +131,9 @@ def admin_menu():
 
 def cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="admin")]])
+
+def user_cancel_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="cancel_user")]])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,13 +149,13 @@ async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     with conn() as c:
-        rows = c.execute("""SELECT p.id,p.name,p.price,COALESCE(pa.name,'بدون پنل')
+        rows = c.execute("""SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل')
             FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id
             WHERE p.active=1 ORDER BY p.id""").fetchall()
     if not rows:
         await q.edit_message_text("🛒 فعلاً محصولی ثبت نشده.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ بازگشت", callback_data="home")]]))
         return
-    buttons = [[InlineKeyboardButton(f"{name} — {price}", callback_data=f"product:{pid}")] for pid, name, price, panel in rows]
+    buttons = [[InlineKeyboardButton(f"{name} — {price} | {gb or 1}GB/{days or 1}روز", callback_data=f"product:{pid}")] for pid, name, price, gb, days, panel in rows]
     buttons.append([InlineKeyboardButton("↩️ بازگشت", callback_data="home")])
     await q.edit_message_text("🛒 پلن موردنظرت رو انتخاب کن:", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -137,15 +165,15 @@ async def product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     pid = int(q.data.split(":")[1])
     with conn() as c:
-        row = c.execute("""SELECT p.id,p.name,p.price,p.description,COALESCE(pa.name,'بدون پنل')
+        row = c.execute("""SELECT p.id,p.name,p.price,p.description,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل')
             FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id
             WHERE p.id=? AND p.active=1""", (pid,)).fetchone()
     if not row:
         await q.edit_message_text("محصول پیدا نشد.")
         return
-    _, name, price, desc, panel = row
+    _, name, price, desc, gb, days, panel = row
     await q.edit_message_text(
-        f"📦 {name}\n\n{desc or 'بدون توضیحات'}\n\n💰 قیمت: {price}\n🖥 پنل: {panel}",
+        f"📦 {name}\n\n{desc or 'بدون توضیحات'}\n\n💰 قیمت: {price}\n📦 حجم: {gb or 1} GB\n⏳ اعتبار: {days or 1} روز\n🖥 پنل: {panel}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛍 ثبت سفارش", callback_data=f"order:{pid}")],
             [InlineKeyboardButton("↩️ محصولات", callback_data="products")],
@@ -154,31 +182,30 @@ async def product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def create_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    pid = int(q.data.split(":")[1])
+    q=update.callback_query; await q.answer(); pid=int(q.data.split(":")[1])
     with conn() as c:
-        row = c.execute("SELECT name,price FROM products WHERE id=? AND active=1", (pid,)).fetchone()
-        if not row:
-            await q.edit_message_text("محصول دیگر موجود نیست.")
-            return
-        oid = c.execute("INSERT INTO orders(user_id,product_id) VALUES(?,?)", (q.from_user.id, pid)).lastrowid
-    await q.edit_message_text(
-        f"✅ سفارش #{oid} ثبت شد.\n\nمحصول: {row[0]}\nمبلغ: {row[1]}\n\n💳 پرداخت را تکمیل کن؛ بعد از تأیید ادمین سرویس تحویل می‌شود.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📦 سفارش‌های من", callback_data="orders")],
-            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
-        ]),
-    )
+        row=c.execute("SELECT id,name,price,panel_id,data_limit_gb,expire_days FROM products WHERE id=? AND active=1",(pid,)).fetchone()
+        if not row: await q.edit_message_text("محصول دیگر موجود نیست."); return
+        oid=c.execute("INSERT INTO orders(user_id,product_id,status) VALUES(?,?,?)",(q.from_user.id,pid,"awaiting_payment")).lastrowid
+        w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(q.from_user.id,)).fetchone()
+    name,price,gb,days=row[1],row[2],row[4] or 1,row[5] or 1; amount=int(re.sub(r"\D","",str(price)) or 0); balance=w[0] if w else 0
+    await q.edit_message_text(f"📦 سفارش #{oid}\n\nمحصول: {name}\n📦 حجم: {gb} GB\n⏳ اعتبار: {days} روز\n💰 مبلغ: {price}\n\nروش پرداخت را انتخاب کن:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 پرداخت مستقیم",callback_data=f"pay_direct:{oid}")],[InlineKeyboardButton(f"💰 پرداخت از کیف پول (موجودی {balance:,})",callback_data=f"pay_wallet:{oid}")],[InlineKeyboardButton("↩️ محصولات",callback_data="products")]]))
 
 
 async def orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     with conn() as c:
-        rows = c.execute("""SELECT o.id,p.name,o.status FROM orders o JOIN products p ON p.id=o.product_id
+        rows = c.execute("""SELECT o.id,p.name,o.status,o.subscription FROM orders o JOIN products p ON p.id=o.product_id
             WHERE o.user_id=? ORDER BY o.id DESC LIMIT 20""", (q.from_user.id,)).fetchall()
-    text = "📦 سفارش‌های تو:\n\n" + "\n".join(f"#{oid} — {name} — {status}" for oid, name, status in rows) if rows else "📦 هنوز سفارشی نداری."
+    if rows:
+        parts=[]
+        for oid,name,status,sub in rows:
+            item=f"#{oid} — {name} — {status}"
+            if sub: item += f"\n🔗 {sub}"
+            parts.append(item)
+        text="📦 سفارش‌های تو:\n\n"+"\n\n".join(parts)
+    else: text="📦 هنوز سفارشی نداری."
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 خرید سرویس", callback_data="products")],
         [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
@@ -196,20 +223,20 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def get_setting(key):
+    with conn() as c: row=c.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone()
+    return row[0] if row else ""
+
+
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+    q=update.callback_query; await q.answer()
     with conn() as c:
-        row = c.execute("SELECT balance FROM wallets WHERE user_id=?", (q.from_user.id,)).fetchone()
-        if not row:
-            c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)", (q.from_user.id,))
-            balance = 0
-        else:
-            balance = row[0]
-    await q.edit_message_text(
-        f"💰 کیف پول\n\nموجودی فعلی: {balance:,} تومان\n\n🧪 این بخش فعلاً Demo است.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]]),
-    )
+        row=c.execute("SELECT balance FROM wallets WHERE user_id=?",(q.from_user.id,)).fetchone()
+        if not row: c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)",(q.from_user.id,)); balance=0
+        else: balance=row[0]
+    card=await get_setting("card_number"); owner=await get_setting("card_owner")
+    card_text=f"\n\n💳 کارت شارژ: {card}\n👤 به نام: {owner}" if card and owner else ""
+    await q.edit_message_text(f"💰 کیف پول\n\nموجودی فعلی: {balance:,} تومان{card_text}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ افزایش موجودی",callback_data="wallet_topup")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
 
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,12 +249,33 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin_add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if not is_admin(q.from_user.id):
-        return
-    context.user_data["flow"] = {"type": "product", "step": "name"}
-    await q.edit_message_text("➕ افزودن محصول\n\nلطفاً نام محصول را ارسال کن:", reply_markup=cancel_keyboard())
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    context.user_data["flow"]={"type":"product","step":"name"}
+    await q.edit_message_text("➕ افزودن محصول\n\nلطفاً نام محصول را ارسال کن:",reply_markup=cancel_keyboard())
+
+
+async def admin_finance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    card=await get_setting("card_number"); owner=await get_setting("card_owner")
+    with conn() as c: pending=c.execute("SELECT COUNT(*) FROM payments WHERE status='pending'").fetchone()[0]
+    await q.edit_message_text(f"💳 بخش مالی\n\n💳 شماره کارت: {card or 'ثبت نشده'}\n👤 صاحب کارت: {owner or 'ثبت نشده'}\n\n⏳ پرداخت‌های در انتظار: {pending}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ ثبت/تغییر شماره کارت",callback_data="finance_card")],[InlineKeyboardButton("📋 پرداخت‌های در انتظار",callback_data="finance_pending")],[InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")]]))
+
+
+async def finance_card_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    context.user_data["flow"]={"type":"finance_card","step":"card"}
+    await q.edit_message_text("💳 شماره کارتت را ارسال کن:",reply_markup=cancel_keyboard())
+
+
+async def finance_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    with conn() as c: rows=c.execute("SELECT id,user_id,kind,order_id,amount FROM payments WHERE status='pending' ORDER BY id DESC LIMIT 30").fetchall()
+    text="📋 پرداخت‌های در انتظار:\n\n"+"\n".join(f"#{i} | user={uid} | {'خرید' if kind=='order' else 'شارژ'} | {amount:,} تومان | order={oid or '-'}" for i,uid,kind,oid,amount in rows) if rows else "📋 پرداخت در انتظاری وجود ندارد."
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ بخش مالی",callback_data="admin_finance")]]))
 
 
 async def admin_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,9 +284,9 @@ async def admin_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(q.from_user.id):
         return
     with conn() as c:
-        rows = c.execute("""SELECT p.id,p.name,p.price,COALESCE(pa.name,'بدون پنل')
+        rows = c.execute("""SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل')
             FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id ORDER BY p.id DESC""").fetchall()
-    text = "📋 محصولات\n\n" + ("\n".join(f"#{i} — {n}\n💰 {pr}\n🖥 {pn}" for i, n, pr, pn in rows) if rows else "هنوز محصولی ثبت نشده.")
+    text = "📋 محصولات\n\n" + ("\n".join(f"#{i} — {n}\n💰 {pr}\n📦 {gb or 1} GB | ⏳ {days or 1} روز\n🖥 {pn}" for i, n, pr, gb, days, pn in rows) if rows else "هنوز محصولی ثبت نشده.")
     await q.edit_message_text(text, reply_markup=admin_menu())
 
 
@@ -688,23 +736,39 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user: return
     user_id=update.effective_user.id
     flow=context.user_data.get("flow")
-    if not flow or not is_admin(user_id): return
+    if not flow: return
+    if flow.get("type") not in ("wallet_amount", "payment_photo") and not is_admin(user_id): return
     text=update.message.text.strip()
+    if flow["type"]=="wallet_amount":
+        await wallet_amount_flow(update.message,context); return
     if flow["type"]=="product":
         if flow["step"]=="name":
-            flow["name"]=text; flow["step"]="price"
-            await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
+            flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
         if flow["step"]=="price":
             digits=text.replace(",","").replace("٬","").replace("تومان","").strip()
-            if not digits.isdigit(): await update.message.reply_text("❌ قیمت باید فقط عدد باشد. دوباره ارسال کن."); return
+            if not digits.isdigit() or int(digits)<=0: await update.message.reply_text("❌ قیمت باید عدد مثبت باشد."); return
             flow["price"]=f"{int(digits):,} تومان"
             with conn() as c: panels=c.execute("SELECT id,panel_type,name,status FROM panels ORDER BY id DESC").fetchall()
-            if not panels:
-                await update.message.reply_text("❌ اول حداقل یک پنل از بخش 🖥 پنل‌ها اضافه کن.",reply_markup=admin_menu()); context.user_data.pop("flow",None); return
+            if not panels: await update.message.reply_text("❌ اول یک پنل اضافه کن.",reply_markup=admin_menu()); context.user_data.pop("flow",None); return
             flow["step"]="panel"
-            buttons=[[InlineKeyboardButton(f"#{i} {name} ({PANEL_TYPES.get(pt,pt)})",callback_data=f"product_panel:{i}")] for i,pt,name,status in panels]
-            buttons.append([InlineKeyboardButton("بدون پنل",callback_data="product_panel:0")])
-            await update.message.reply_text("🖥 محصول به کدام پنل متصل باشد؟",reply_markup=InlineKeyboardMarkup(buttons)); return
+            await update.message.reply_text("🖥 محصول به کدام پنل متصل باشد؟",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"#{i} {name} ({PANEL_TYPES.get(pt,pt)})",callback_data=f"product_panel:{i}")] for i,pt,name,status in panels])); return
+    if flow["type"]=="finance_card":
+        if flow["step"]=="card":
+            card=re.sub(r"\D","",text)
+            if len(card)!=16: await update.message.reply_text("❌ شماره کارت باید ۱۶ رقم باشد."); return
+            flow["card_number"]=card; flow["step"]="owner"; await update.message.reply_text("👤 لطفاً نام صاحب کارت را بگو:"); return
+        if flow["step"]=="owner":
+            with conn() as c:
+                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('card_number',?)",(flow["card_number"],)); c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('card_owner',?)",(text,))
+            context.user_data.pop("flow",None); await update.message.reply_text("✅ اطلاعات کارت ثبت شد.",reply_markup=admin_menu()); return
+    if flow["type"]=="product" and flow.get("step")=="gb":
+        if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ حجم را فقط به عدد مثبت وارد کن."); return
+        flow["data_limit_gb"]=int(text); flow["step"]="days"; await update.message.reply_text("⏳ زمان را فقط به عدد وارد کن. هر 1 عدد = 1 روز."); return
+    if flow["type"]=="product" and flow.get("step")=="days":
+        if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ زمان باید عدد مثبت باشد."); return
+        flow["expire_days"]=int(text)
+        with conn() as c: pid=c.execute("INSERT INTO products(name,price,panel_id,data_limit_gb,expire_days) VALUES(?,?,?,?,?)",(flow["name"],flow["price"],flow["panel_id"],flow["data_limit_gb"],flow["expire_days"])).lastrowid
+        context.user_data.pop("flow",None); await update.message.reply_text(f"✅ محصول #{pid} اضافه شد.\n\nنام: {flow['name']}\nقیمت: {flow['price']}\n🖥 پنل: #{flow['panel_id']}\n📦 حجم: {flow['data_limit_gb']} GB\n⏳ زمان: {flow['expire_days']} روز",reply_markup=admin_menu()); return
     if flow["type"]=="panel":
         if flow["step"]=="address":
             if not valid_url(text): await update.message.reply_text("❌ آدرس معتبر نیست. با http:// یا https:// ارسال کن."); return
@@ -722,31 +786,159 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def select_product_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if not is_admin(q.from_user.id):
-        return
-    flow = context.user_data.get("flow")
-    if not flow or flow.get("type") != "product":
-        await q.edit_message_text("فرآیند افزودن محصول منقضی شده.", reply_markup=admin_menu())
-        return
-    panel_id = int(q.data.split(":")[1])
-    if panel_id:
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    flow=context.user_data.get("flow")
+    if not flow or flow.get("type")!="product": await q.edit_message_text("فرآیند افزودن محصول منقضی شده.",reply_markup=admin_menu()); return
+    panel_id=int(q.data.split(":")[1])
+    with conn() as c: p=c.execute("SELECT id,panel_type,name FROM panels WHERE id=?",(panel_id,)).fetchone()
+    if not p: await q.edit_message_text("❌ پنل پیدا نشد.",reply_markup=admin_menu()); return
+    flow["panel_id"]=panel_id; flow["step"]="gb"
+    await q.edit_message_text(f"🖥 پنل انتخاب شد: {p[2]}\n\n📦 چند گیگ باشد؟\nفقط عدد بفرست. مثال: 20",reply_markup=cancel_keyboard())
+
+
+async def payment_card_info(amount,kind="order"):
+    card=await get_setting("card_number"); owner=await get_setting("card_owner")
+    if not card or not owner: return None
+    return f"💳 {'پرداخت سفارش' if kind=='order' else 'شارژ کیف پول'}\n\n💰 مبلغ: {amount:,} تومان\n\n💳 شماره کارت: {card}\n👤 به نام: {owner}\n\nلطفاً مبلغ بالا را واریز کن و عکس رسید را همینجا ارسال کن."
+
+
+async def pay_direct_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); oid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT o.id,o.user_id,o.product_id,p.name,p.price FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?",(oid,q.from_user.id)).fetchone()
+    if not row: await q.edit_message_text("❌ سفارش پیدا نشد."); return
+    amount=int(re.sub(r"\D","",str(row[4])) or 0); info=await payment_card_info(amount,"order")
+    if not info: await q.edit_message_text("❌ شماره کارت فروشگاه هنوز ثبت نشده."); return
+    with conn() as c: payid=c.execute("INSERT INTO payments(user_id,kind,order_id,amount) VALUES(?,?,?,?)",(q.from_user.id,"order",oid,amount)).lastrowid
+    context.user_data["flow"]={"type":"payment_photo","payment_id":payid}
+    await q.edit_message_text(info,reply_markup=user_cancel_keyboard())
+
+
+async def wallet_topup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); context.user_data["flow"]={"type":"wallet_amount"}
+    await q.edit_message_text("💰 مبلغ شارژ کیف پول را به تومان فقط به عدد وارد کن. مثال: 500000",reply_markup=user_cancel_keyboard())
+
+
+async def wallet_amount_flow(message,context):
+    text=message.text.replace(",","").replace("٬","").replace("تومان","").strip()
+    if not text.isdigit() or int(text)<=0: await message.reply_text("❌ مبلغ باید عدد مثبت باشد."); return
+    amount=int(text); info=await payment_card_info(amount,"wallet")
+    if not info: await message.reply_text("❌ شماره کارت فروشگاه هنوز ثبت نشده.",reply_markup=menu(message.from_user.id)); return
+    with conn() as c: payid=c.execute("INSERT INTO payments(user_id,kind,amount) VALUES(?,?,?)",(message.from_user.id,"wallet_topup",amount)).lastrowid
+    context.user_data["flow"]={"type":"payment_photo","payment_id":payid}
+    await message.reply_text(info,reply_markup=user_cancel_keyboard())
+
+
+async def pay_wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); oid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT o.id,o.user_id,o.product_id,p.name,p.price,p.panel_id,p.data_limit_gb,p.expire_days FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?",(oid,q.from_user.id)).fetchone(); w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(q.from_user.id,)).fetchone()
+    if not row: await q.edit_message_text("❌ سفارش پیدا نشد."); return
+    amount=int(re.sub(r"\D","",str(row[4])) or 0); balance=w[0] if w else 0
+    if balance<amount:
+        card=await get_setting("card_number"); owner=await get_setting("card_owner")
+        if not card or not owner: await q.edit_message_text(f"❌ موجودی کافی نیست.\nموجودی: {balance:,} تومان\nلازم: {amount:,} تومان",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💰 کیف پول",callback_data="wallet")]])); return
+        with conn() as c: payid=c.execute("INSERT INTO payments(user_id,kind,order_id,amount) VALUES(?,?,?,?)",(q.from_user.id,"wallet_topup_for_order",oid,amount)).lastrowid
+        context.user_data["flow"]={"type":"payment_photo","payment_id":payid}
+        await q.edit_message_text(f"❌ موجودی کیف پول کافی نیست.\n\n💰 مبلغ لازم: {amount:,} تومان\n💳 {card}\n👤 به نام: {owner}\n\nعکس رسید را ارسال کن.",reply_markup=user_cancel_keyboard()); return
+    await deliver_order(q,oid,q.from_user.id,from_wallet=True)
+
+
+async def deliver_order(q,oid,uid,from_wallet=False):
+    with conn() as c: row=c.execute("SELECT o.id,o.user_id,o.product_id,p.name,p.price,p.panel_id,p.data_limit_gb,p.expire_days FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?",(oid,uid)).fetchone()
+    if not row: await q.edit_message_text("❌ سفارش پیدا نشد."); return False, None
+    _,_,_,name,price,panel_id,gb,days=row; amount=int(re.sub(r"\D","",str(price)) or 0)
+    try:
+        with conn() as c: pt=c.execute("SELECT panel_type,address FROM panels WHERE id=?",(panel_id,)).fetchone()
+        if not pt or pt[0]!="pasarguard": raise RuntimeError("محصول باید به پنل Pasarguard متصل باشد.")
+        if from_wallet:
+            with conn() as c: w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(uid,)).fetchone();
+            if not w or w[0]<amount: raise RuntimeError("موجودی کیف پول کافی نیست.")
+        username=f"tg{uid}_{oid}"[:64]; user,_=await pasarguard_create_user(panel_id,username,int(gb or 1)*1024*1024*1024,int(days or 1))
+        sub=user.get("subscription_url") or user.get("sub_url") or user.get("subscription")
+        if sub: sub=full_subscription_url(pt[1],sub)
         with conn() as c:
-            p = c.execute("SELECT id,name FROM panels WHERE id=?", (panel_id,)).fetchone()
-        if not p:
-            await q.edit_message_text("❌ پنل پیدا نشد.", reply_markup=admin_menu())
-            return
-    with conn() as c:
-        pid = c.execute("INSERT INTO products(name,price,panel_id) VALUES(?,?,?)", (flow["name"], flow["price"], panel_id or None)).lastrowid
-    context.user_data.pop("flow", None)
-    await q.edit_message_text(f"✅ محصول #{pid} اضافه شد.\n\nنام: {flow['name']}\nقیمت: {flow['price']}", reply_markup=admin_menu())
+            if from_wallet: c.execute("UPDATE wallets SET balance=balance-? WHERE user_id=?",(amount,uid))
+            c.execute("UPDATE orders SET status='paid',subscription=?,panel_username=? WHERE id=?",(sub or '',username,oid))
+        result_text=f"🎉 سفارش #{oid} تأیید و تحویل شد.\n\n📦 {name}\n📦 حجم: {gb or 1} GB\n⏳ اعتبار: {days or 1} روز\n\n🔗 Subscription:\n{sub or '⚠️ لینک subscription دریافت نشد.'}"
+        markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سفارش‌های من",callback_data="orders")],[InlineKeyboardButton("💰 کیف پول",callback_data="wallet")]])
+        if getattr(q.message, "photo", None): await q.edit_message_caption(caption=result_text,reply_markup=markup)
+        else: await q.edit_message_text(result_text,reply_markup=markup)
+        return True, sub
+    except Exception as e:
+        err=f"❌ ساخت سرویس ناموفق بود؛ مبلغ کم نشد.\n\n{str(e)[:600]}"
+        if getattr(q.message, "photo", None): await q.edit_message_caption(caption=err)
+        else: await q.edit_message_text(err)
+        return False, None
+
+
+async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    flow=context.user_data.get("flow",{})
+    if flow.get("type")!="payment_photo" or not update.message or not update.message.photo: return
+    payid=flow["payment_id"]; photo=update.message.photo[-1].file_id
+    with conn() as c: c.execute("UPDATE payments SET photo_file_id=? WHERE id=?",(photo,payid)); row=c.execute("SELECT id,user_id,kind,order_id,amount FROM payments WHERE id=?",(payid,)).fetchone()
+    context.user_data.pop("flow",None)
+    if not row: await update.message.reply_text("❌ پرداخت پیدا نشد."); return
+    pid,uid,kind,oid,amount=row
+    await update.message.reply_text("✅ رسید دریافت شد. بعد از تأیید ادمین نتیجه اعلام می‌شود.",reply_markup=menu(uid))
+    label={"order":"🛒 خرید سرویس","wallet_topup":"💰 شارژ کیف پول","wallet_topup_for_order":"💰 شارژ برای خرید"}.get(kind,kind)
+    cap=f"💳 رسید #{pid}\n\nنوع: {label}\n👤 User ID: {uid}\n💰 مبلغ: {amount:,} تومان"+(f"\n📦 سفارش: #{oid}" if oid else "")
+    kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأیید",callback_data=f"payapprove:{pid}"),InlineKeyboardButton("❌ رد",callback_data=f"payreject:{pid}")]])
+    for aid in ADMIN_IDS:
+        try: await context.bot.send_photo(aid,photo=photo,caption=cap,reply_markup=kb)
+        except Exception: pass
+
+
+async def approve_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer("در حال پردازش...");
+    if not is_admin(q.from_user.id): return
+    payid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT id,user_id,kind,order_id,amount,status FROM payments WHERE id=?",(payid,)).fetchone()
+    if not row: await q.edit_message_caption(caption="❌ پرداخت پیدا نشد."); return
+    _,uid,kind,oid,amount,status=row
+    if status!="pending": await q.edit_message_caption(caption=f"ℹ️ قبلاً پردازش شده: {status}"); return
+    if kind=="wallet_topup":
+        with conn() as c: c.execute("UPDATE payments SET status='approved' WHERE id=?",(payid,)); c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)",(uid,)); c.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?",(amount,uid))
+        await q.edit_message_caption(caption=f"✅ شارژ #{payid} تأیید شد. +{amount:,} تومان")
+        try: await context.bot.send_message(uid,f"🎉 شارژ کیف پول تأیید شد.\n💰 +{amount:,} تومان",reply_markup=menu(uid))
+        except Exception: pass
+        return
+    if kind=="wallet_topup_for_order":
+        with conn() as c: c.execute("UPDATE payments SET status='approved' WHERE id=?",(payid,)); c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)",(uid,)); c.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?",(amount,uid))
+        ok,sub=await deliver_order(q,oid,uid,from_wallet=True)
+        if ok:
+            try: await context.bot.send_message(uid,f"🎉 سفارش #{oid} تأیید شد و سرویس ساخته شد.\n\n🔗 Subscription:\n{sub or '⚠️ لینک subscription دریافت نشد.'}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سفارش‌های من",callback_data="orders")],[InlineKeyboardButton("💰 کیف پول",callback_data="wallet")]]))
+            except Exception: pass
+        return
+    with conn() as c: c.execute("UPDATE payments SET status='approved' WHERE id=?",(payid,))
+    ok,sub=await deliver_order(q,oid,uid,from_wallet=False)
+    if not ok:
+        with conn() as c: c.execute("UPDATE payments SET status='pending' WHERE id=?",(payid,))
+        return
+    try: await context.bot.send_message(uid,f"🎉 سفارش #{oid} تأیید شد و سرویس ساخته شد.\n\n🔗 Subscription:\n{sub or '⚠️ لینک subscription دریافت نشد.'}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سفارش‌های من",callback_data="orders")]]))
+    except Exception: pass
+
+
+async def reject_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer();
+    if not is_admin(q.from_user.id): return
+    payid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT user_id,kind,order_id,amount,status FROM payments WHERE id=?",(payid,)).fetchone()
+    if not row: return
+    uid,kind,oid,amount,status=row
+    if status!="pending": await q.edit_message_caption(caption=f"ℹ️ قبلاً پردازش شده: {status}"); return
+    with conn() as c: c.execute("UPDATE payments SET status='rejected' WHERE id=?",(payid,)); c.execute("UPDATE orders SET status='payment_rejected' WHERE id=?",(oid,)) if kind=="order" and oid else None
+    await q.edit_message_caption(caption=f"❌ پرداخت #{payid} رد شد.")
+    try: await context.bot.send_message(uid,f"❌ رسید پرداخت رد شد.\n💰 مبلغ: {amount:,} تومان",reply_markup=menu(uid))
+    except Exception: pass
 
 
 async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    if q.data == "home":
+    if q.data == "cancel_user":
+        context.user_data.pop("flow",None)
+        await q.edit_message_text("❌ لغو شد.",reply_markup=menu(q.from_user.id))
+    elif q.data == "home":
         context.user_data.pop("flow", None)
         await q.edit_message_text("🏠 منوی اصلی:", reply_markup=menu(q.from_user.id))
     elif q.data == "support":
@@ -835,6 +1027,14 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data=="admin_products": return await admin_products(update,context)
     if data=="admin_orders": return await admin_orders(update,context)
     if data=="wallet": return await wallet(update,context)
+    if data=="admin_finance": return await admin_finance(update,context)
+    if data=="finance_card": return await finance_card_start(update,context)
+    if data=="finance_pending": return await finance_pending(update,context)
+    if data=="wallet_topup": return await wallet_topup_start(update,context)
+    if data.startswith("pay_direct:"): return await pay_direct_start(update,context)
+    if data.startswith("pay_wallet:"): return await pay_wallet_start(update,context)
+    if data.startswith("payapprove:"): return await approve_payment(update,context)
+    if data.startswith("payreject:"): return await reject_payment(update,context)
     return await simple(update,context)
 
 
@@ -853,6 +1053,7 @@ def main():
     app.add_handler(CallbackQueryHandler(orders, pattern=r"^orders$"))
     app.add_handler(CallbackQueryHandler(profile, pattern=r"^profile$"))
     app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_payment_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
     app.run_polling()
 
