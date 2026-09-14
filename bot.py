@@ -1,5 +1,6 @@
 import os
 import re
+from urllib.parse import urljoin
 import sqlite3
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
@@ -484,6 +485,22 @@ async def pg_client(panel_id: int):
         raise
 
 
+def full_subscription_url(base_url: str, subscription: str):
+    """Return a usable absolute subscription URL.
+
+    PasarGuard may return only a relative path such as /sub/<token>.
+    In that case the panel base URL must be prepended so Telegram users
+    receive a directly usable link.
+    """
+    if not subscription:
+        return subscription
+    value = str(subscription).strip()
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+    base = clean_base_url(base_url).rstrip("/") + "/"
+    return urljoin(base, value.lstrip("/"))
+
+
 def extract_list(data, keys):
     if isinstance(data, list): return data
     if isinstance(data, dict):
@@ -630,6 +647,10 @@ async def create_pg_user_flow(message,context):
     try:
         user,group_ids=await pasarguard_create_user(pid,username,0,30)
         sub=user.get("subscription_url") or user.get("sub_url") or user.get("subscription")
+        with conn() as c:
+            panel_row=c.execute("SELECT address FROM panels WHERE id=?", (pid,)).fetchone()
+        if sub and panel_row:
+            sub=full_subscription_url(panel_row[0], sub)
         groups=await selected_groups_for_panel(pid)
         gtext="\n".join(f"• {n} [ID:{gid}]" for gid,n,_ in groups)
         text=f"✅ کاربر ساخته شد.\n\n👤 Username: {user.get('username',username)}\n⏳ اعتبار: ۳۰ روز\n\n🔗 Groupها:\n{gtext}\n\n"
@@ -651,6 +672,10 @@ async def test_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user,group_ids=await pasarguard_create_user(pid,username,1024*1024,1)
         sub=user.get("subscription_url") or user.get("sub_url") or user.get("subscription")
+        with conn() as c:
+            panel_row=c.execute("SELECT address FROM panels WHERE id=?", (pid,)).fetchone()
+        if sub and panel_row:
+            sub=full_subscription_url(panel_row[0], sub)
         gtext="\n".join(f"• {n} [ID:{gid}]" for gid,n,_ in groups)
         text=f"🧪 Pasarguard — تست Group\n\n👤 User: {user.get('username',username)}\n📦 حجم: 1 MB\n⏳ اعتبار: 1 روز\n\n🔗 Groupها:\n{gtext}\n\n"
         text += f"🔗 Subscription:\n{sub}" if sub else "⚠️ subscription_url در پاسخ API برنگشت."
