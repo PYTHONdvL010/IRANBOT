@@ -3,16 +3,17 @@ import re
 import json
 import sqlite3
 import secrets
+import tempfile
 from functools import wraps
 
 import httpx
-from flask import Flask, request, redirect, url_for, session, render_template_string, flash
+from flask import Flask, request, redirect, url_for, session, render_template_string, flash, send_file
 
 DB_PATH = os.getenv('DB_PATH', 'shop.db')
 ADMIN_IDS = {int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()}
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 WEB_SECRET = os.getenv('WEB_SECRET') or secrets.token_hex(32)
-VERSION = '1.0.5'
+VERSION = '1.0.6'
 
 PANEL_TYPES = {'marzban': 'Marzban', 'pasarguard': 'Pasarguard', '3xui': '3x-ui'}
 
@@ -36,7 +37,7 @@ input,textarea,select{width:100%;box-sizing:border-box;background:#081525;color:
 </style></head><body><div class="wrap">
 <div class="top"><div class="brand"><div class="logo">⚡</div><div><h1>IRANBOT <span class="version">v{{version}}</span></h1><div class="muted small">داشبورد مدیریت فروش و سرویس</div></div></div>{% if session.get('admin_id') %}<a class="logout" href="{{url_for('logout')}}">خروج ↪</a>{% endif %}</div>
 {% if session.get('admin_id') %}<div class="nav">
-<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('discount')}}">🏷 تخفیف</a>
+<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('discount')}}">🏷 تخفیف</a><a href="{{url_for('backup')}}">💾 پشتیبان‌گیری</a>
 </div>{% endif %}
 {% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}
 <div class="muted small" style="margin:28px 2px 0">IRANBOT — نسخه {{version}} — ساخته شده توسط PYTHONdvL010</div></div></body></html>
@@ -50,6 +51,70 @@ def db():
     c = sqlite3.connect(DB_PATH)
     c.execute('PRAGMA busy_timeout=5000')
     return c
+
+
+BACKUP_REQUIRED_TABLES = {"users", "wallets", "panels", "products", "orders", "settings"}
+
+
+def create_backup_file_sync(prefix="iranbot_backup"):
+    ensure_schema()
+    fd, path = tempfile.mkstemp(prefix=f"{prefix}_", suffix=".db")
+    os.close(fd)
+    try:
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(path)
+        try:
+            src.backup(dst)
+            row = dst.execute("PRAGMA integrity_check").fetchone()
+            if not row or row[0] != "ok":
+                raise RuntimeError("Database integrity check failed")
+        finally:
+            dst.close(); src.close()
+        return path
+    except Exception:
+        try: os.remove(path)
+        except OSError: pass
+        raise
+
+
+def validate_backup_file_sync(path):
+    try:
+        c=sqlite3.connect(path)
+        try:
+            check=c.execute("PRAGMA integrity_check").fetchone()
+            if not check or check[0] != "ok":
+                return False,"فایل Backup سالم نیست یا Database آسیب دیده است."
+            tables={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            missing=BACKUP_REQUIRED_TABLES-tables
+            if missing:
+                return False,"فایل Backup مربوط به IRANBOT نیست یا جدول‌های اصلی ناقص هستند."
+            return True,"ok"
+        finally:
+            c.close()
+    except sqlite3.DatabaseError:
+        return False,"فایل انتخاب‌شده یک SQLite Database معتبر نیست."
+
+
+def restore_backup_file_sync(path):
+    ok,reason=validate_backup_file_sync(path)
+    if not ok: return False,reason
+    parent=os.path.dirname(DB_PATH) or "."
+    os.makedirs(parent,exist_ok=True)
+    fd,staged=tempfile.mkstemp(prefix="iranbot_restore_",suffix=".db",dir=parent)
+    os.close(fd)
+    try:
+        src=sqlite3.connect(path); dst=sqlite3.connect(staged)
+        try: src.backup(dst)
+        finally: dst.close(); src.close()
+        ok,reason=validate_backup_file_sync(staged)
+        if not ok: raise RuntimeError(reason)
+        os.replace(staged,DB_PATH)
+        ensure_schema()
+        return True,"ok"
+    except Exception as e:
+        try: os.remove(staged)
+        except OSError: pass
+        return False,str(e)[:500]
 
 
 def ensure_schema():
@@ -438,6 +503,61 @@ def orders():
     with db() as c: rows=c.execute('SELECT o.id,o.user_id,p.name,o.status,o.subscription,o.created_at FROM orders o JOIN products p ON p.id=o.product_id ORDER BY o.id DESC LIMIT 150').fetchall()
     b='''<div class="card"><h2>📦 سفارش‌ها</h2><div class="table-wrap"><table class="table"><tr><th>ID</th><th>User</th><th>محصول</th><th>وضعیت</th><th>Subscription</th><th>تاریخ</th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td><span class="badge {{'ok' if r[3]=='paid' else 'warn'}}">{{r[3]}}</span></td><td class="mini">{{r[4] or '-'}}</td><td>{{r[5]}}</td></tr>{% endfor %}</table></div></div>'''
     return page(b,rows=rows)
+
+@app.route('/backup',methods=['GET','POST'])
+@admin_required
+def backup():
+    if request.method=='POST':
+        action=request.form.get('action','')
+        if action=='weekly_on':
+            set_setting('backup_weekly_enabled','1')
+            from datetime import datetime, timezone
+            set_setting('backup_weekly_last_sent',datetime.now(timezone.utc).isoformat())
+            flash('🟢 Backup هفتگی فعال شد؛ هر 7 روز برای ادمین‌ها ارسال می‌شود.')
+        elif action=='weekly_off':
+            set_setting('backup_weekly_enabled','0')
+            flash('🔴 Backup هفتگی غیرفعال شد.')
+        return redirect(url_for('backup'))
+    enabled=setting('backup_weekly_enabled')=='1'
+    last=setting('backup_weekly_last_sent') or 'هنوز ارسال نشده'
+    b="""<div class='hero'><h2>💾 پشتیبان‌گیری و بازیابی</h2><p>یک فایل کامل از اطلاعات Database بساز، دانلود کن یا در صورت نیاز Backup قبلی را برگردان.</p></div><div class='card'><h3>📥 گرفتن فایل Backup</h3><p class='muted'>کل اطلاعات ذخیره‌شده در SQLite، شامل کاربران، کیف پول‌ها، پنل‌ها، Groupها، محصولات، سفارش‌ها، پرداخت‌ها، تنظیمات، تیکت‌ها و سایر جدول‌های Database در یک فایل ذخیره می‌شود.</p><a class='btn blue' href='{{url_for('backup_download')}}'>💾 ساخت و دانلود Backup</a></div><div class='card'><h3>📤 وارد کردن فایل Backup</h3><p class='muted'>فایل Backup قبلی را انتخاب کن. فایل قبل از بازیابی از نظر SQLite و جدول‌های اصلی بررسی می‌شود.</p><form method='post' action='{{url_for('backup_restore')}}' enctype='multipart/form-data'><input type='file' name='backup_file' accept='.db,.sqlite,.sqlite3' required><button class='danger'>📤 بازیابی Backup</button></form></div><div class='card'><div class='row' style='justify-content:space-between'><div><h3>📅 Backup خودکار هر 7 روز</h3><p class='muted'>وقتی فعال باشد، Bot هر 7 روز یک فایل کامل Backup برای همه ADMIN_IDS ارسال می‌کند.</p></div><span class='badge {{'ok' if enabled else 'bad'}}'>{{'🟢 فعال' if enabled else '🔴 غیرفعال'}}</span></div><p class='small muted'>آخرین ارسال: {{last}}</p><form method='post'><button name='action' value='{{'weekly_off' if enabled else 'weekly_on'}}' class='{{'danger' if enabled else ''}}'>{{'2️⃣ غیرفعال کردن' if enabled else '1️⃣ فعال کردن'}}</button></form></div>"""
+    return page(b,enabled=enabled,last=last)
+
+@app.route('/backup/download')
+@admin_required
+def backup_download():
+    path=None
+    try:
+        path=create_backup_file_sync()
+        response=send_file(path,as_attachment=True,download_name=os.path.basename(path),mimetype='application/octet-stream')
+        response.call_on_close(lambda: os.path.exists(path) and os.remove(path))
+        return response
+    except Exception as e:
+        flash(f'❌ ساخت Backup ناموفق بود: {str(e)[:400]}')
+        return redirect(url_for('backup'))
+
+@app.route('/backup/restore',methods=['POST'])
+@admin_required
+def backup_restore():
+    uploaded=request.files.get('backup_file')
+    if not uploaded or not uploaded.filename:
+        flash('❌ فایل Backup انتخاب نشده است.')
+        return redirect(url_for('backup'))
+    suffix=os.path.splitext(uploaded.filename)[1].lower() or '.db'
+    if suffix not in ('.db','.sqlite','.sqlite3'):
+        flash('❌ فقط فایل‌های .db، .sqlite و .sqlite3 پذیرفته می‌شوند.')
+        return redirect(url_for('backup'))
+    fd,path=tempfile.mkstemp(prefix='iranbot_upload_',suffix=suffix)
+    os.close(fd)
+    try:
+        uploaded.save(path)
+        ok,reason=restore_backup_file_sync(path)
+        if ok: flash('✅ Backup با موفقیت بازیابی شد و Database جایگزین شد.')
+        else: flash(f'❌ بازیابی Backup ناموفق بود: {reason}')
+    finally:
+        try: os.remove(path)
+        except OSError: pass
+    return redirect(url_for('backup'))
 
 @app.route('/discount')
 @admin_required

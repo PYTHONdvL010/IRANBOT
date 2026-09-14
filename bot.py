@@ -4,11 +4,14 @@ import json
 from urllib.parse import urljoin
 import sqlite3
 import threading
+import asyncio
+import tempfile
+import shutil
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, MessageHandler, filters,
@@ -119,6 +122,125 @@ def init_db():
             c.execute("ALTER TABLE orders ADD COLUMN panel_username TEXT DEFAULT ''")
 
 
+
+BACKUP_REQUIRED_TABLES = {"users", "wallets", "panels", "products", "orders", "settings"}
+
+
+def backup_enabled_sync():
+    return get_setting_sync("backup_weekly_enabled") == "1"
+
+
+def set_setting_sync(key, value):
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (key, str(value)))
+
+
+def create_backup_file_sync(prefix="iranbot_backup"):
+    init_db()
+    fd, path = tempfile.mkstemp(prefix=f"{prefix}_", suffix=".db")
+    os.close(fd)
+    try:
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(path)
+        try:
+            src.backup(dst)
+            row = dst.execute("PRAGMA integrity_check").fetchone()
+            if not row or row[0] != "ok":
+                raise RuntimeError("Database integrity check failed")
+        finally:
+            dst.close()
+            src.close()
+        return path
+    except Exception:
+        try: os.remove(path)
+        except OSError: pass
+        raise
+
+
+def validate_backup_file_sync(path):
+    db = sqlite3.connect(path)
+    try:
+        check = db.execute("PRAGMA integrity_check").fetchone()
+        if not check or check[0] != "ok":
+            return False, "فایل Backup سالم نیست یا Database آسیب دیده است."
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        missing = BACKUP_REQUIRED_TABLES - tables
+        if missing:
+            return False, "فایل Backup مربوط به IRANBOT نیست یا جدول‌های اصلی آن ناقص است."
+        return True, "ok"
+    except sqlite3.DatabaseError:
+        return False, "فایل انتخاب‌شده یک SQLite Database معتبر نیست."
+    finally:
+        db.close()
+
+
+def restore_backup_file_sync(path):
+    ok, reason = validate_backup_file_sync(path)
+    if not ok:
+        return False, reason
+    parent = os.path.dirname(DB_PATH) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, staged = tempfile.mkstemp(prefix="iranbot_restore_", suffix=".db", dir=parent)
+    os.close(fd)
+    try:
+        src = sqlite3.connect(path)
+        dst = sqlite3.connect(staged)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        ok, reason = validate_backup_file_sync(staged)
+        if not ok:
+            raise RuntimeError(reason)
+        os.replace(staged, DB_PATH)
+        init_db()
+        return True, "ok"
+    except Exception as e:
+        try: os.remove(staged)
+        except OSError: pass
+        return False, str(e)[:500]
+
+
+async def send_backup_to_admins(bot, caption="💾 فایل Backup دیتابیس IRANBOT"):
+    path = await asyncio.to_thread(create_backup_file_sync)
+    try:
+        for aid in ADMIN_IDS:
+            try:
+                with open(path, "rb") as f:
+                    await bot.send_document(
+                        chat_id=aid,
+                        document=InputFile(f, filename=os.path.basename(path)),
+                        caption=caption,
+                    )
+            except Exception as e:
+                print(f"Backup send failed for admin {aid}: {e}")
+    finally:
+        try: os.remove(path)
+        except OSError: pass
+
+
+async def weekly_backup_loop(app):
+    await asyncio.sleep(30)
+    while True:
+        try:
+            if backup_enabled_sync():
+                last = get_setting_sync("backup_weekly_last_sent")
+                due = True
+                if last:
+                    try:
+                        last_dt = datetime.fromisoformat(last)
+                        if datetime.now(timezone.utc) - last_dt < timedelta(days=7):
+                            due = False
+                    except Exception:
+                        due = True
+                if due:
+                    await send_backup_to_admins(app.bot, "📅 Backup هفتگی IRANBOT\n\n💾 اطلاعات کامل Database ذخیره شده است.")
+                    set_setting_sync("backup_weekly_last_sent", datetime.now(timezone.utc).isoformat())
+        except Exception as e:
+            print("Weekly backup error:", e)
+        await asyncio.sleep(3600)
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -148,6 +270,7 @@ def admin_menu():
         [InlineKeyboardButton("🖥 پنل‌ها", callback_data="admin_panels")],
         [InlineKeyboardButton("📋 محصولات", callback_data="admin_products")],
         [InlineKeyboardButton("📦 سفارش‌ها", callback_data="admin_orders")],
+        [InlineKeyboardButton("💾 پشتیبان‌گیری", callback_data="admin_backup")],
         [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
     ])
 
@@ -1379,6 +1502,115 @@ async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("🎁 کد تخفیف\n\nفعلاً کد تخفیف فعال نیست.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]]))
 
 
+
+async def admin_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not is_admin(q.from_user.id): return
+    enabled = backup_enabled_sync()
+    last = get_setting_sync("backup_weekly_last_sent") or "هنوز ارسال نشده"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📥 گرفتن فایل Backup", callback_data="backup_create")],
+        [InlineKeyboardButton("📤 وارد کردن فایل Backup", callback_data="backup_restore")],
+        [InlineKeyboardButton("1️⃣ فعال کردن Backup هر 7 روز" if not enabled else "1️⃣ فعال است — هر 7 روز ارسال شود", callback_data="backup_weekly_on")],
+        [InlineKeyboardButton("2️⃣ غیرفعال کردن Backup هفتگی" if enabled else "2️⃣ غیرفعال است", callback_data="backup_weekly_off")],
+        [InlineKeyboardButton("↩️ پنل مدیریت", callback_data="admin")],
+    ])
+    status = "🟢 فعال" if enabled else "🔴 غیرفعال"
+    await q.edit_message_text(
+        f"💾 پشتیبان‌گیری\n\n"
+        f"وضعیت Backup هفتگی: {status}\n"
+        f"آخرین ارسال: {last}\n\n"
+        f"📥 گرفتن Backup: کل اطلاعات Database در یک فایل ذخیره می‌شود.\n"
+        f"📤 وارد کردن Backup: فایل Database را بفرست تا اطلاعات دوباره در Database قرار بگیرد.\n\n"
+        f"Backup شامل کاربران، کیف پول‌ها، پنل‌ها، Groupها، محصولات، سفارش‌ها، پرداخت‌ها، تنظیمات، تیکت‌ها و سایر اطلاعات ذخیره‌شده در Database است.",
+        reply_markup=kb,
+    )
+
+
+async def admin_backup_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("در حال ساخت Backup...")
+    if not is_admin(q.from_user.id): return
+    try:
+        path = await asyncio.to_thread(create_backup_file_sync)
+        try:
+            with open(path, "rb") as f:
+                await context.bot.send_document(q.from_user.id, InputFile(f, filename=os.path.basename(path)), caption="✅ Backup کامل Database آماده شد.")
+        finally:
+            try: os.remove(path)
+            except OSError: pass
+        await q.message.reply_text("✅ فایل Backup برایت ارسال شد.", reply_markup=admin_menu())
+    except Exception as e:
+        await q.message.reply_text(f"❌ ساخت Backup ناموفق بود.\n\n{str(e)[:500]}", reply_markup=admin_menu())
+
+
+async def admin_backup_restore_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not is_admin(q.from_user.id): return
+    context.user_data["flow"] = {"type": "backup_restore"}
+    await q.edit_message_text(
+        "📤 وارد کردن Backup\n\nفایل Backup دیتابیس را به همین چت بفرست.\n\n"
+        "فرمت پیشنهادی: .db\n"
+        "قبل از جایگزینی، فایل بررسی می‌شود و فقط SQLite Backup معتبر IRANBOT پذیرفته خواهد شد.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def admin_backup_restore_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_admin(uid): return
+    flow = context.user_data.get("flow", {})
+    if flow.get("type") != "backup_restore": return
+    doc = update.message.document
+    if not doc:
+        return
+    if doc.file_size and doc.file_size > 50 * 1024 * 1024:
+        await update.message.reply_text("❌ حجم فایل Backup نباید بیشتر از 50MB باشد.", reply_markup=admin_menu())
+        context.user_data.pop("flow", None)
+        return
+    path = None
+    try:
+        suffix = os.path.splitext(doc.file_name or "backup.db")[1].lower() or ".db"
+        if suffix not in (".db", ".sqlite", ".sqlite3"):
+            suffix = ".db"
+        fd, path = tempfile.mkstemp(prefix="iranbot_upload_", suffix=suffix)
+        os.close(fd)
+        tg_file = await context.bot.get_file(doc.file_id)
+        await tg_file.download_to_drive(path)
+        ok, reason = await asyncio.to_thread(validate_backup_file_sync, path)
+        if not ok:
+            await update.message.reply_text(f"❌ Backup قابل قبول نیست.\n\n{reason}", reply_markup=admin_menu())
+            return
+        ok, reason = await asyncio.to_thread(restore_backup_file_sync, path)
+        if ok:
+            await update.message.reply_text("✅ Backup با موفقیت وارد Database شد.\n\nاطلاعات قبلی با اطلاعات Backup جایگزین شد.", reply_markup=admin_menu())
+        else:
+            await update.message.reply_text(f"❌ بازیابی Backup ناموفق بود.\n\n{reason}", reply_markup=admin_menu())
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطا در دریافت/بازیابی Backup:\n\n{str(e)[:500]}", reply_markup=admin_menu())
+    finally:
+        context.user_data.pop("flow", None)
+        if path:
+            try: os.remove(path)
+            except OSError: pass
+
+
+async def backup_weekly_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    set_setting_sync("backup_weekly_enabled", "1")
+    set_setting_sync("backup_weekly_last_sent", datetime.now(timezone.utc).isoformat())
+    await q.edit_message_text("🟢 Backup هفتگی فعال شد.\n\nاز این لحظه هر 7 روز یک فایل Backup برای ادمین‌ها ارسال می‌شود.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💾 پشتیبان‌گیری", callback_data="admin_backup")]]))
+
+
+async def backup_weekly_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    set_setting_sync("backup_weekly_enabled", "0")
+    await q.edit_message_text("🔴 Backup هفتگی غیرفعال شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💾 پشتیبان‌گیری", callback_data="admin_backup")]]))
+
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(update.effective_user.id):
         await update.message.reply_text("🛠 پنل مدیریت", reply_markup=admin_menu())
@@ -1474,6 +1706,11 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("product_panel:"): return await select_product_panel(update,context)
     if data=="admin_products": return await admin_products(update,context)
     if data=="admin_orders": return await admin_orders(update,context)
+    if data=="admin_backup": return await admin_backup(update,context)
+    if data=="backup_create": return await admin_backup_create(update,context)
+    if data=="backup_restore": return await admin_backup_restore_start(update,context)
+    if data=="backup_weekly_on": return await backup_weekly_on(update,context)
+    if data=="backup_weekly_off": return await backup_weekly_off(update,context)
     if data.startswith("delete_product:"): return await delete_product(update,context)
     if data=="wallet": return await wallet(update,context)
     if data=="admin_finance": return await admin_finance(update,context)
@@ -1505,7 +1742,9 @@ def main():
     for _name in ("products","product","create_order","orders","service_detail","profile","wallet","pay_direct_start","wallet_topup_start","pay_wallet_start","free_test_user_start","free_test_panel_start","support_start","simple"):
         globals()[_name] = wrap_membership(globals()[_name])
     init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
+    async def post_init(application):
+        application.create_task(weekly_backup_loop(application), name="iranbot_weekly_backup")
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("addconfig", addconfig))
@@ -1519,6 +1758,7 @@ def main():
     app.add_handler(CallbackQueryHandler(profile, pattern=r"^profile$"))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.PHOTO, handle_payment_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, admin_backup_restore_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
     try:
         from web_panel import start_web_server
