@@ -85,6 +85,19 @@ def init_db():
             photo_file_id TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS support_tickets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, admin_id INTEGER,
+            message TEXT DEFAULT '', photo_file_id TEXT DEFAULT '', status TEXT DEFAULT 'open',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS free_test_settings(
+            panel_id INTEGER PRIMARY KEY, max_tests INTEGER DEFAULT 1, data_limit_mb INTEGER DEFAULT 100,
+            expire_hours INTEGER DEFAULT 1, enabled INTEGER DEFAULT 1
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS free_test_usage(
+            user_id INTEGER NOT NULL, panel_id INTEGER NOT NULL, used_count INTEGER DEFAULT 0,
+            PRIMARY KEY(user_id, panel_id)
+        )""")
         cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "panel_id" not in cols:
             c.execute("ALTER TABLE products ADD COLUMN panel_id INTEGER")
@@ -111,6 +124,7 @@ def menu(user_id: int):
          InlineKeyboardButton("👤 حساب من", callback_data="profile")],
         [InlineKeyboardButton("💰 کیف پول", callback_data="wallet"),
          InlineKeyboardButton("🎁 کد تخفیف", callback_data="coupon")],
+        [InlineKeyboardButton("🎁 تست رایگان", callback_data="free_test")],
         [InlineKeyboardButton("💬 پشتیبانی", callback_data="support")],
     ]
     if is_admin(user_id):
@@ -193,23 +207,30 @@ async def create_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+    q=update.callback_query; await q.answer()
     with conn() as c:
-        rows = c.execute("""SELECT o.id,p.name,o.status,o.subscription FROM orders o JOIN products p ON p.id=o.product_id
-            WHERE o.user_id=? ORDER BY o.id DESC LIMIT 20""", (q.from_user.id,)).fetchall()
-    if rows:
-        parts=[]
-        for oid,name,status,sub in rows:
-            item=f"#{oid} — {name} — {status}"
-            if sub: item += f"\n🔗 {sub}"
-            parts.append(item)
-        text="📦 سفارش‌های تو:\n\n"+"\n\n".join(parts)
-    else: text="📦 هنوز سفارشی نداری."
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 خرید سرویس", callback_data="products")],
-        [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
-    ]))
+        rows=c.execute("""SELECT o.id,p.name,o.status,o.subscription,p.data_limit_gb,p.expire_days
+            FROM orders o JOIN products p ON p.id=o.product_id
+            WHERE o.user_id=? AND o.status='paid' ORDER BY o.id DESC LIMIT 20""",(q.from_user.id,)).fetchall()
+    if not rows:
+        text="📦 هنوز سرویس فعالی در سفارش‌های تو ثبت نشده."
+        buttons=[[InlineKeyboardButton("🛒 خرید سرویس",callback_data="products")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]
+    else:
+        text="📦 سرویس‌های من:\n\nهر سرویس را برای دیدن لینک و مشخصات بزن:"
+        buttons=[[InlineKeyboardButton(f"📦 #{oid} — {name} | {gb or 1}GB/{days or 1}روز",callback_data=f"service:{oid}")] for oid,name,status,sub,gb,days in rows]
+        buttons += [[InlineKeyboardButton("🛒 خرید سرویس",callback_data="products")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
+
+async def service_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); oid=int(q.data.split(":")[1])
+    with conn() as c:
+        row=c.execute("""SELECT o.id,p.name,o.status,o.subscription,o.panel_username,p.price,p.data_limit_gb,p.expire_days
+            FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=? AND o.status='paid'""",(oid,q.from_user.id)).fetchone()
+    if not row:
+        await q.edit_message_text("❌ سرویس پیدا نشد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سرویس‌های من",callback_data="orders")]])); return
+    oid,name,status,sub,username,price,gb,days=row
+    text=f"📦 سرویس #{oid}\n\nنام: {name}\n📦 حجم: {gb or 1} GB\n⏳ اعتبار: {days or 1} روز\n💰 مبلغ: {price}\n👤 Username: {username or '-'}\n\n🔗 Subscription:\n{sub or 'لینک موجود نیست.'}"
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سرویس‌های من",callback_data="orders")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
 
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -468,6 +489,7 @@ async def panel_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("🔗 اتصال Group", callback_data=f"connect_group:{pid}")])
         buttons.append([InlineKeyboardButton("👤 ساخت کاربر / کانفیگ", callback_data=f"create_pg_user:{pid}")])
         buttons.append([InlineKeyboardButton("🧪 Pasarguard — تست Group", callback_data=f"test_group:{pid}")])
+        buttons.append([InlineKeyboardButton("🎁 تنظیم تست رایگان کاربران", callback_data=f"free_test_settings:{pid}")])
         buttons.append([InlineKeyboardButton("🔄 بروزرسانی Groupها", callback_data=f"refresh_groups:{pid}")])
     buttons += [
         [InlineKeyboardButton("🧪 تست API Pasarguard" if pt == "pasarguard" else "🧪 تست اتصال", callback_data=f"test_panel:{pid}")],
@@ -710,6 +732,73 @@ async def create_pg_user_flow(message,context):
         await message.reply_text(f"❌ ساخت کاربر ناموفق بود.\n\n{msg[:700]}",reply_markup=cancel_keyboard()); return False
 
 
+async def free_test_settings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    pid=int(q.data.split(":")[1])
+    with conn() as c:
+        row=c.execute("SELECT name FROM panels WHERE id=? AND panel_type='pasarguard'",(pid,)).fetchone()
+        st=c.execute("SELECT max_tests,data_limit_mb,expire_hours FROM free_test_settings WHERE panel_id=?",(pid,)).fetchone()
+    if not row: await q.edit_message_text("❌ پنل پیدا نشد.",reply_markup=admin_menu()); return
+    current=f"\n\nتنظیم فعلی: هر کاربر {st[0]} تست | {st[1]} MB | {st[2]} ساعت" if st else ""
+    context.user_data["flow"]={"type":"free_test_admin","step":"max_tests","panel_id":pid}
+    await q.edit_message_text(f"🎁 تنظیم تست رایگان\n\nپنل: {row[0]}{current}\n\nهر کاربر چند بار بتواند تست بگیرد؟ فقط عدد بفرست.\nمثال: 2",reply_markup=cancel_keyboard())
+
+async def free_test_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    with conn() as c:
+        rows=c.execute("""SELECT p.id,p.name,s.max_tests,s.data_limit_mb,s.expire_hours FROM panels p JOIN free_test_settings s ON s.panel_id=p.id
+            WHERE p.panel_type='pasarguard' AND p.status='connected' AND s.enabled=1 ORDER BY p.id""").fetchall()
+    if not rows: await q.edit_message_text("❌ فعلاً تست رایگان فعال نشده.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]])); return
+    buttons=[[InlineKeyboardButton(f"🎁 {name} — {mb}MB/{hrs}ساعت",callback_data=f"free_test_panel:{pid}")] for pid,name,mt,mb,hrs in rows]
+    buttons.append([InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")])
+    await q.edit_message_text("🎁 تست رایگان\n\nپنل تست را انتخاب کن:",reply_markup=InlineKeyboardMarkup(buttons))
+
+async def free_test_panel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); pid=int(q.data.split(":")[1]); uid=q.from_user.id
+    with conn() as c:
+        st=c.execute("SELECT max_tests,data_limit_mb,expire_hours FROM free_test_settings WHERE panel_id=? AND enabled=1",(pid,)).fetchone()
+        used=c.execute("SELECT used_count FROM free_test_usage WHERE user_id=? AND panel_id=?",(uid,pid)).fetchone()
+        groups=c.execute("SELECT group_id,group_name FROM panel_groups WHERE panel_id=? ORDER BY id",(pid,)).fetchall()
+        prow=c.execute("SELECT name FROM panels WHERE id=? AND panel_type='pasarguard'",(pid,)).fetchone()
+    if not st or not prow: await q.edit_message_text("❌ تست برای این پنل فعال نیست.",reply_markup=menu(uid)); return
+    used_n=used[0] if used else 0
+    if used_n>=st[0]:
+        await q.edit_message_text(f"⛔️ محدودیت ساخت تست شما تمام شد.\n\nتعداد مجاز: {st[0]} بار\nتعداد استفاده‌شده: {used_n} بار",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]])); return
+    if not groups: await q.edit_message_text("❌ برای این پنل Group ثبت نشده.",reply_markup=menu(uid)); return
+    context.user_data["flow"]={"type":"free_test_user","step":"mb","panel_id":pid}
+    await q.edit_message_text(f"🎁 تست رایگان — {prow[0]}\n\nتست {used_n+1} از {st[0]}\n\n📦 چند MB باشد؟ فقط عدد بفرست.\nمثال: {st[1]}\nهر 1 عدد = 1 MB",reply_markup=user_cancel_keyboard())
+
+async def free_test_create(message, context):
+    flow=context.user_data.get("flow",{}); pid=flow["panel_id"]; mb=int(flow["mb"]); hours=int(flow["hours"]); uid=message.from_user.id
+    with conn() as c:
+        st=c.execute("SELECT max_tests FROM free_test_settings WHERE panel_id=? AND enabled=1",(pid,)).fetchone()
+        used=c.execute("SELECT used_count FROM free_test_usage WHERE user_id=? AND panel_id=?",(uid,pid)).fetchone()
+    if not st: await message.reply_text("❌ تست برای این پنل فعال نیست.",reply_markup=menu(uid)); return False
+    used_n=used[0] if used else 0
+    if used_n>=st[0]: await message.reply_text("⛔️ محدودیت ساخت تست شما تمام شد.",reply_markup=menu(uid)); return False
+    username=f"trial{uid}_{datetime.now().strftime('%m%d%H%M%S%f')}"[:64]
+    try:
+        groups=await selected_groups_for_panel(pid); group_ids=[g[0] for g in groups if g[0] is not None]
+        if not group_ids: raise RuntimeError("no_groups")
+        client,base,headers=await pg_client(pid)
+        try:
+            expire=(datetime.now(timezone.utc)+timedelta(hours=hours)).replace(microsecond=0).isoformat()
+            payload={"username":username,"proxy_settings":{},"expire":expire,"data_limit":mb*1024*1024,"data_limit_reset_strategy":"no_reset","status":"active","group_ids":group_ids}
+            r=await client.post(f"{base}/api/user",headers=headers,json=payload)
+            if r.status_code in (400,422): raise RuntimeError(f"create_user:{r.text[:500]}")
+            r.raise_for_status(); data=r.json(); user=data.get("user") if isinstance(data,dict) and isinstance(data.get("user"),dict) else data
+        finally: await client.aclose()
+        sub=user.get("subscription_url") or user.get("sub_url") or user.get("subscription")
+        with conn() as c:
+            c.execute("INSERT OR IGNORE INTO free_test_usage(user_id,panel_id,used_count) VALUES(?,?,0)",(uid,pid)); c.execute("UPDATE free_test_usage SET used_count=used_count+1 WHERE user_id=? AND panel_id=?",(uid,pid)); prow=c.execute("SELECT address FROM panels WHERE id=?",(pid,)).fetchone()
+        sub=full_subscription_url(prow[0],sub) if sub and prow else sub
+        left=st[0]-(used_n+1)
+        await message.reply_text(f"🎁 تست رایگان شما ساخته شد.\n\n📦 حجم: {mb} MB\n⏳ زمان: {hours} ساعت\n👤 User: {username}\n\n🔗 Subscription:\n{sub or 'لینک دریافت نشد.'}\n\n📊 تست باقی‌مانده: {left}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎁 تست رایگان",callback_data="free_test")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]])); return True
+    except Exception as e:
+        await message.reply_text(f"❌ ساخت تست ناموفق بود.\n\n{str(e)[:600]}",reply_markup=menu(uid)); return False
+
+
 async def test_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer("در حال ساخت تست 1MB...")
     if not is_admin(q.from_user.id): return
@@ -737,10 +826,33 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id=update.effective_user.id
     flow=context.user_data.get("flow")
     if not flow: return
-    if flow.get("type") not in ("wallet_amount", "payment_photo") and not is_admin(user_id): return
+    if flow.get("type") not in ("wallet_amount", "payment_photo", "support") and not is_admin(user_id): return
+    if flow.get("type") == "support_admin_reply" and not is_admin(user_id): return
     text=update.message.text.strip()
     if flow["type"]=="wallet_amount":
         await wallet_amount_flow(update.message,context); return
+    if flow["type"]=="support":
+        await support_user_message(update, context); return
+    if flow["type"]=="support_admin_reply":
+        await support_admin_reply(update.message, context); return
+    if flow["type"]=="free_test_admin":
+        step=flow.get("step")
+        if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ فقط عدد مثبت وارد کن."); return
+        if step=="max_tests": flow["max_tests"]=int(text); flow["step"]="mb"; await update.message.reply_text("📦 حجم تست را به MB وارد کن.\nهر 1 عدد = 1 MB\nمثال: 100"); return
+        if step=="mb": flow["data_limit_mb"]=int(text); flow["step"]="hours"; await update.message.reply_text("⏳ زمان تست را به ساعت وارد کن.\nهر 1 عدد = 1 ساعت\nمثال: 1"); return
+        if step=="hours":
+            flow["expire_hours"]=int(text)
+            with conn() as c: c.execute("INSERT OR REPLACE INTO free_test_settings(panel_id,max_tests,data_limit_mb,expire_hours,enabled) VALUES(?,?,?,?,1)",(flow["panel_id"],flow["max_tests"],flow["data_limit_mb"],flow["expire_hours"]))
+            context.user_data.pop("flow",None); await update.message.reply_text(f"✅ تنظیم تست رایگان ثبت شد.\n\nهر کاربر: {flow['max_tests']} بار\n📦 حجم: {flow['data_limit_mb']} MB\n⏳ زمان: {flow['expire_hours']} ساعت",reply_markup=admin_menu()); return
+    if flow["type"]=="free_test_user":
+        if flow.get("step")=="mb":
+            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ حجم باید عدد مثبت باشد."); return
+            flow["mb"]=int(text); flow["step"]="hours"; await update.message.reply_text("⏳ چند ساعت باشد؟ فقط عدد بفرست.\nهر 1 عدد = 1 ساعت",reply_markup=user_cancel_keyboard()); return
+        if flow.get("step")=="hours":
+            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ زمان باید عدد مثبت باشد."); return
+            flow["hours"]=int(text); result=await free_test_create(update.message,context)
+            if result is True: context.user_data.pop("flow",None)
+            return
     if flow["type"]=="product":
         if flow["step"]=="name":
             flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
@@ -799,8 +911,11 @@ async def select_product_panel(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def payment_card_info(amount,kind="order"):
     card=await get_setting("card_number"); owner=await get_setting("card_owner")
-    if not card or not owner: return None
-    return f"💳 {'پرداخت سفارش' if kind=='order' else 'شارژ کیف پول'}\n\n💰 مبلغ: {amount:,} تومان\n\n💳 شماره کارت: {card}\n👤 به نام: {owner}\n\nلطفاً مبلغ بالا را واریز کن و عکس رسید را همینجا ارسال کن."
+    if not card: return None
+    if kind == "wallet":
+        return f"💰 شارژ کیف پول\n\n💰 مبلغ: {amount:,} تومان\n\n💳 شماره کارت: {card}\n\nمبلغ بالا را واریز کن و عکس رسید را همینجا ارسال کن."
+    if not owner: return None
+    return f"💳 پرداخت سفارش\n\n💰 مبلغ: {amount:,} تومان\n\n💳 شماره کارت: {card}\n👤 به نام: {owner}\n\nمبلغ بالا را واریز کن و عکس رسید را همینجا ارسال کن."
 
 
 async def pay_direct_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -873,6 +988,8 @@ async def deliver_order(q,oid,uid,from_wallet=False):
 
 async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     flow=context.user_data.get("flow",{})
+    if flow.get("type")=="support" and update.message and update.message.photo:
+        await support_user_message(update, context); return
     if flow.get("type")!="payment_photo" or not update.message or not update.message.photo: return
     payid=flow["payment_id"]; photo=update.message.photo[-1].file_id
     with conn() as c: c.execute("UPDATE payments SET photo_file_id=? WHERE id=?",(photo,payid)); row=c.execute("SELECT id,user_id,kind,order_id,amount FROM payments WHERE id=?",(payid,)).fetchone()
@@ -932,6 +1049,42 @@ async def reject_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception: pass
 
 
+async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); context.user_data["flow"]={"type":"support","step":"message"}
+    await q.edit_message_text("💬 پشتیبانی\n\nلطفاً عکس یا پیام خودت را برای پشتیبانی بفرست.",reply_markup=user_cancel_keyboard())
+
+async def support_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid=update.effective_user.id; msg=update.message; text=msg.text or msg.caption or ""; photo=msg.photo[-1].file_id if msg.photo else ""
+    if not text and not photo: await msg.reply_text("❌ لطفاً یک پیام یا عکس بفرست."); return
+    with conn() as c: tid=c.execute("INSERT INTO support_tickets(user_id,message,photo_file_id) VALUES(?,?,?)",(uid,text,photo)).lastrowid
+    context.user_data.pop("flow",None); await msg.reply_text("✅ پیامت برای پشتیبانی ارسال شد. منتظر پاسخ باش.",reply_markup=menu(uid))
+    cap=f"💬 درخواست پشتیبانی #{tid}\n\n👤 User ID: {uid}\n\n{text}"; kb=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ پاسخ",callback_data=f"support_reply:{tid}")]])
+    for aid in ADMIN_IDS:
+        try:
+            if photo: await context.bot.send_photo(aid,photo=photo,caption=cap,reply_markup=kb)
+            else: await context.bot.send_message(aid,cap,reply_markup=kb)
+        except Exception: pass
+
+async def support_reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    tid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT user_id FROM support_tickets WHERE id=?",(tid,)).fetchone()
+    if not row: await q.edit_message_text("❌ درخواست پیدا نشد."); return
+    context.user_data["flow"]={"type":"support_admin_reply","ticket_id":tid,"user_id":row[0]}
+    await q.edit_message_text(f"↩️ پاسخ به تیکت #{tid}\n\nمتن پاسخ را ارسال کن:",reply_markup=cancel_keyboard())
+
+async def support_admin_reply(message, context):
+    flow=context.user_data.get("flow",{}); uid=flow["user_id"]; tid=flow["ticket_id"]; text=message.text.strip()
+    if not text: await message.reply_text("❌ متن پاسخ خالی است."); return
+    with conn() as c: c.execute("UPDATE support_tickets SET admin_id=?,status='answered' WHERE id=?",(message.from_user.id,tid))
+    context.user_data.pop("flow",None)
+    try:
+        await context.bot.send_message(uid,f"💬 پاسخ پشتیبانی\n\n{text}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 پشتیبانی",callback_data="support")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
+        await message.reply_text("✅ پاسخ برای کاربر ارسال شد.",reply_markup=admin_menu())
+    except Exception as e: await message.reply_text(f"❌ ارسال پاسخ ناموفق بود: {str(e)[:200]}",reply_markup=admin_menu())
+
+
 async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -942,7 +1095,9 @@ async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("flow", None)
         await q.edit_message_text("🏠 منوی اصلی:", reply_markup=menu(q.from_user.id))
     elif q.data == "support":
-        await q.edit_message_text("💬 پشتیبانی\n\nبرای پشتیبانی با ادمین فروشگاه تماس بگیر.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]]))
+        await support_start(update, context)
+    elif q.data == "free_test":
+        await free_test_user_start(update, context)
     elif q.data == "coupon":
         await q.edit_message_text("🎁 کد تخفیف\n\nفعلاً کد تخفیف فعال نیست.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]]))
 
@@ -1035,6 +1190,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("pay_wallet:"): return await pay_wallet_start(update,context)
     if data.startswith("payapprove:"): return await approve_payment(update,context)
     if data.startswith("payreject:"): return await reject_payment(update,context)
+    if data.startswith("service:"): return await service_detail(update,context)
+    if data.startswith("free_test_settings:"): return await free_test_settings_start(update,context)
+    if data.startswith("free_test_panel:"): return await free_test_panel_start(update,context)
+    if data.startswith("support_reply:"): return await support_reply_start(update,context)
     return await simple(update,context)
 
 
