@@ -1,2 +1,4 @@
 python-telegram-bot==22.5
 httpx>=0.27,<1
+
+Flask>=3.0,<4

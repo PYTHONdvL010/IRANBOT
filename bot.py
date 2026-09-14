@@ -2,6 +2,7 @@ import os
 import re
 from urllib.parse import urljoin
 import sqlite3
+import threading
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 
@@ -135,6 +136,8 @@ def menu(user_id: int):
 def admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ افزودن محصول", callback_data="admin_add")],
+        [InlineKeyboardButton("👋 پیام خوش‌آمد", callback_data="admin_welcome")],
+        [InlineKeyboardButton("📢 عضویت اجباری", callback_data="admin_mandatory")],
         [InlineKeyboardButton("💳 بخش مالی", callback_data="admin_finance")],
         [InlineKeyboardButton("🖥 پنل‌ها", callback_data="admin_panels")],
         [InlineKeyboardButton("📋 محصولات", callback_data="admin_products")],
@@ -150,13 +153,60 @@ def user_cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="cancel_user")]])
 
 
+def render_welcome(user):
+    template = get_setting_sync("welcome_message") or "سلام {username} 👋\n\nبه IRANBOT خوش اومدی."
+    values = {
+        "username": user.first_name or user.username or str(user.id),
+        "first_name": user.first_name or "",
+        "user_id": user.id,
+    }
+    try:
+        return template.format(**values)
+    except Exception:
+        return template
+
+def get_setting_sync(key):
+    with conn() as c:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row[0] if row else ""
+
+async def mandatory_status(context, user_id: int):
+    if is_admin(user_id):
+        return True
+    enabled = get_setting_sync("mandatory_enabled") == "1"
+    channel_id = get_setting_sync("mandatory_channel_id")
+    if not enabled or not channel_id:
+        return True
+    try:
+        member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception:
+        return False
+
+async def membership_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or await mandatory_status(context, user.id):
+        return True
+    link = get_setting_sync("mandatory_channel_link")
+    title = get_setting_sync("mandatory_channel_title") or "کانال ما"
+    buttons=[]
+    if link:
+        buttons.append([InlineKeyboardButton(f"📢 عضویت در {title}", url=link)])
+    buttons.append([InlineKeyboardButton("✅ عضو شدم / بررسی عضویت", callback_data="check_membership")])
+    text=f"⛔️ برای استفاده از ربات ابتدا باید عضو {title} شوی.\n\nبعد از عضویت روی «عضو شدم / بررسی عضویت» بزن."
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    elif update.message:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("flow", None)
+    if not await membership_gate(update, context):
+        return
     user = update.effective_user
-    await update.message.reply_text(
-        f"سلام {user.first_name} 👋\n\nبه فروشگاه کانفیگ خوش اومدی.",
-        reply_markup=menu(user.id),
-    )
+    await update.message.reply_text(render_welcome(user), reply_markup=menu(user.id))
 
 
 async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,6 +325,28 @@ async def admin_add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["flow"]={"type":"product","step":"name"}
     await q.edit_message_text("➕ افزودن محصول\n\nلطفاً نام محصول را ارسال کن:",reply_markup=cancel_keyboard())
 
+
+async def admin_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    cur=get_setting_sync("welcome_message") or "سلام {username} 👋\n\nبه IRANBOT خوش اومدی."
+    context.user_data["flow"]={"type":"welcome_admin"}
+    await q.edit_message_text(f"👋 پیام خوش‌آمد\n\nپیام خوش‌آمدت را بنویس.\n\nمتغیرها:\n{{username}} = نام خوانده‌شده کاربر\n{{first_name}} = نام\n{{user_id}} = آیدی عددی\n\nپیام فعلی:\n{cur}",reply_markup=cancel_keyboard())
+
+async def admin_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    cid=get_setting_sync("mandatory_channel_id"); title=get_setting_sync("mandatory_channel_title"); link=get_setting_sync("mandatory_channel_link"); enabled=get_setting_sync("mandatory_enabled")=="1"
+    context.user_data["flow"]={"type":"mandatory_admin","step":"channel_id"}
+    current=f"\n\nتنظیم فعلی:\nID: {cid or '-'}\nعنوان: {title or '-'}\nلینک: {link or '-'}\nوضعیت: {'فعال' if enabled else 'خاموش'}"
+    await q.edit_message_text("📢 عضویت اجباری\n\nاول ربات را با تمام دسترسی‌های لازم ادمین کانال کن، بعد ID عددی یا @username کانال را بفرست."+current,reply_markup=cancel_keyboard())
+
+async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer("در حال بررسی...")
+    if await mandatory_status(context,q.from_user.id):
+        await q.edit_message_text(render_welcome(q.from_user),reply_markup=menu(q.from_user.id))
+    else:
+        await membership_gate(update,context)
 
 async def admin_finance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -855,6 +927,34 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if flow["type"]=="free_test_user":
         await update.message.reply_text("ℹ️ تست رایگان با حجم و زمان تنظیم‌شده توسط مدیریت ساخته می‌شود.",reply_markup=menu(user_id))
         return
+    if flow["type"]=="welcome_admin":
+        with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('welcome_message',?)",(text,))
+        context.user_data.pop("flow",None)
+        await update.message.reply_text("✅ پیام خوش‌آمد ذخیره شد.",reply_markup=admin_menu()); return
+    if flow["type"]=="mandatory_admin":
+        if flow.get("step")=="channel_id":
+            channel=text.strip()
+            try:
+                chat=await context.bot.get_chat(channel)
+                me=await context.bot.get_chat_member(chat_id=chat.id,user_id=context.bot.id)
+                if me.status not in ("administrator","creator"):
+                    await update.message.reply_text("❌ ربات هنوز ادمین این کانال نیست. اول ربات را با دسترسی‌های لازم ادمین کن و دوباره ID/username را بفرست.",reply_markup=cancel_keyboard()); return
+                flow["channel_id"]=str(chat.id); flow["title"]=chat.title or channel; flow["link"]=text.strip() if text.strip().startswith("http") else (("https://t.me/"+text.strip().lstrip("@")) if text.strip().startswith("@") else get_setting_sync("mandatory_channel_link")); flow["step"]="link"
+                await update.message.reply_text("🔗 لینک عضویت کانال را بفرست (مثال: https://t.me/channel). اگر کانال عمومی است لینک @username هم قابل استفاده است.")
+                return
+            except Exception as e:
+                await update.message.reply_text(f"❌ کانال پیدا نشد یا دسترسی ربات کافی نیست.\n\n{str(e)[:300]}",reply_markup=cancel_keyboard()); return
+        if flow.get("step")=="link":
+            link=text.strip()
+            if not (link.startswith("http://") or link.startswith("https://")):
+                await update.message.reply_text("❌ لینک معتبر نیست. مثال: https://t.me/channel"); return
+            with conn() as c:
+                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_id',?)",(flow["channel_id"],))
+                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_title',?)",(flow["title"],))
+                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_link',?)",(link,))
+                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_enabled','1')")
+            context.user_data.pop("flow",None)
+            await update.message.reply_text(f"✅ عضویت اجباری با ID {flow['channel_id']} فعال شد.",reply_markup=admin_menu()); return
     if flow["type"]=="product":
         if flow["step"]=="name":
             flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
@@ -1169,6 +1269,9 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; data=q.data
     if data=="admin": return await admin_panel(update,context)
     if data=="admin_add": return await admin_add_product(update,context)
+    if data=="admin_welcome": return await admin_welcome(update,context)
+    if data=="admin_mandatory": return await admin_mandatory(update,context)
+    if data=="check_membership": return await check_membership(update,context)
     if data=="admin_panels": return await admin_panels(update,context)
     if data=="add_panel": return await add_panel_start(update,context)
     if data.startswith("paneltype:"): return await select_panel_type(update,context)
@@ -1199,7 +1302,19 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await simple(update,context)
 
 
+
+def wrap_membership(fn):
+    async def wrapped(update, context):
+        if not await membership_gate(update, context):
+            return
+        return await fn(update, context)
+    return wrapped
+
+
 def main():
+    global products, product, create_order, orders, service_detail, profile, wallet, pay_direct_start, wallet_topup_start, pay_wallet_start, free_test_user_start, free_test_panel_start, support_start, simple
+    for _name in ("products","product","create_order","orders","service_detail","profile","wallet","pay_direct_start","wallet_topup_start","pay_wallet_start","free_test_user_start","free_test_panel_start","support_start","simple"):
+        globals()[_name] = wrap_membership(globals()[_name])
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -1216,6 +1331,11 @@ def main():
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.PHOTO, handle_payment_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
+    try:
+        from web_panel import start_web_server
+        threading.Thread(target=start_web_server, daemon=True).start()
+    except Exception as e:
+        print("Web panel start failed:", e)
     app.run_polling()
 
 
