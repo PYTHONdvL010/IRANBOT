@@ -766,8 +766,15 @@ async def free_test_panel_start(update: Update, context: ContextTypes.DEFAULT_TY
     if used_n>=st[0]:
         await q.edit_message_text(f"⛔️ محدودیت ساخت تست شما تمام شد.\n\nتعداد مجاز: {st[0]} بار\nتعداد استفاده‌شده: {used_n} بار",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]])); return
     if not groups: await q.edit_message_text("❌ برای این پنل Group ثبت نشده.",reply_markup=menu(uid)); return
-    context.user_data["flow"]={"type":"free_test_user","step":"mb","panel_id":pid}
-    await q.edit_message_text(f"🎁 تست رایگان — {prow[0]}\n\nتست {used_n+1} از {st[0]}\n\n📦 چند MB باشد؟ فقط عدد بفرست.\nمثال: {st[1]}\nهر 1 عدد = 1 MB",reply_markup=user_cancel_keyboard())
+    # حجم و زمان تست از تنظیمات ادمین خوانده می‌شود؛ کاربر حق تغییر آن‌ها را ندارد.
+    context.user_data["flow"]={"type":"free_test_user","step":"ready","panel_id":pid,"mb":st[1],"hours":st[2]}
+    await q.edit_message_text(
+        f"🎁 تست رایگان — {prow[0]}\n\nتست {used_n+1} از {st[0]}\n\n📦 حجم: {st[1]} MB\n⏳ زمان: {st[2]} ساعت\n\nدر حال ساخت تست...",
+        reply_markup=user_cancel_keyboard()
+    )
+    result=await free_test_create(q.message, context)
+    if result is True:
+        context.user_data.pop("flow",None)
 
 async def free_test_create(message, context):
     flow=context.user_data.get("flow",{}); pid=flow["panel_id"]; mb=int(flow["mb"]); hours=int(flow["hours"]); uid=message.from_user.id
@@ -844,15 +851,10 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             flow["expire_hours"]=int(text)
             with conn() as c: c.execute("INSERT OR REPLACE INTO free_test_settings(panel_id,max_tests,data_limit_mb,expire_hours,enabled) VALUES(?,?,?,?,1)",(flow["panel_id"],flow["max_tests"],flow["data_limit_mb"],flow["expire_hours"]))
             context.user_data.pop("flow",None); await update.message.reply_text(f"✅ تنظیم تست رایگان ثبت شد.\n\nهر کاربر: {flow['max_tests']} بار\n📦 حجم: {flow['data_limit_mb']} MB\n⏳ زمان: {flow['expire_hours']} ساعت",reply_markup=admin_menu()); return
+    # free_test_user is created immediately after panel selection using the admin settings.
     if flow["type"]=="free_test_user":
-        if flow.get("step")=="mb":
-            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ حجم باید عدد مثبت باشد."); return
-            flow["mb"]=int(text); flow["step"]="hours"; await update.message.reply_text("⏳ چند ساعت باشد؟ فقط عدد بفرست.\nهر 1 عدد = 1 ساعت",reply_markup=user_cancel_keyboard()); return
-        if flow.get("step")=="hours":
-            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ زمان باید عدد مثبت باشد."); return
-            flow["hours"]=int(text); result=await free_test_create(update.message,context)
-            if result is True: context.user_data.pop("flow",None)
-            return
+        await update.message.reply_text("ℹ️ تست رایگان با حجم و زمان تنظیم‌شده توسط مدیریت ساخته می‌شود.",reply_markup=menu(user_id))
+        return
     if flow["type"]=="product":
         if flow["step"]=="name":
             flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
