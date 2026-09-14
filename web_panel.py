@@ -17,12 +17,12 @@ BASE = '''
 <title>IRANBOT — Admin</title><style>
 body{margin:0;background:#0f172a;color:#e5e7eb;font-family:Tahoma,Arial,sans-serif} .wrap{max-width:1180px;margin:30px auto;padding:0 16px}.nav{display:flex;gap:8px;flex-wrap:wrap;background:#111827;padding:12px;border-radius:14px}.nav a{color:#e5e7eb;text-decoration:none;background:#1f2937;padding:9px 12px;border-radius:10px}.card{background:#111827;border:1px solid #263244;border-radius:16px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}.stat{font-size:26px;font-weight:bold}.muted{color:#94a3b8}.ok{color:#86efac}.bad{color:#fca5a5}input,textarea,select{width:100%;box-sizing:border-box;background:#0b1220;color:#fff;border:1px solid #334155;border-radius:10px;padding:11px;margin:7px 0 14px}button{background:#22c55e;color:#06130a;border:0;border-radius:10px;padding:11px 16px;font-weight:bold;cursor:pointer}.danger{background:#ef4444;color:#fff}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.small{font-size:13px}.table{width:100%;border-collapse:collapse}.table td,.table th{border-bottom:1px solid #263244;padding:9px;text-align:right}.badge{padding:4px 8px;border-radius:8px;background:#1e293b}.login{max-width:430px;margin:100px auto}.flash{background:#1e293b;border-right:4px solid #22c55e;padding:10px;margin-bottom:10px;border-radius:8px}
 </style></head><body><div class="wrap">
-<div class="row" style="justify-content:space-between"><h1>🇮🇷 IRANBOT <span class="muted small">v1.0.1</span></h1>{% if session.get('admin_id') %}<a href="{{url_for('logout')}}">خروج</a>{% endif %}</div>
+<div class="row" style="justify-content:space-between"><h1>🇮🇷 IRANBOT <span class="muted small">v1.0.2</span></h1>{% if session.get('admin_id') %}<a href="{{url_for('logout')}}">خروج</a>{% endif %}</div>
 {% if session.get('admin_id') %}<div class="nav">
-<a href="{{url_for('dashboard')}}">داشبورد</a><a href="{{url_for('welcome')}}">پیام خوش‌آمد</a><a href="{{url_for('mandatory')}}">عضویت اجباری</a><a href="{{url_for('finance')}}">مالی</a><a href="{{url_for('panels')}}">پنل‌ها</a><a href="{{url_for('products')}}">محصولات</a><a href="{{url_for('orders')}}">سفارش‌ها</a><a href="{{url_for('free_tests')}}">تست رایگان</a><a href="{{url_for('discount')}}">کد تخفیف</a>
+<a href="{{url_for('dashboard')}}">داشبورد</a><a href="{{url_for('users')}}">کاربران</a><a href="{{url_for('welcome')}}">پیام خوش‌آمد</a><a href="{{url_for('mandatory')}}">عضویت اجباری</a><a href="{{url_for('finance')}}">مالی</a><a href="{{url_for('panels')}}">پنل‌ها</a><a href="{{url_for('products')}}">محصولات</a><a href="{{url_for('orders')}}">سفارش‌ها</a><a href="{{url_for('free_tests')}}">تست رایگان</a><a href="{{url_for('discount')}}">کد تخفیف</a>
 </div>{% endif %}
 {% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}
-<div class="muted small" style="margin:25px 0">IRANBOT — نسخه 1.0.1 — ساخته شده توسط PYTHONdvL010</div></div></body></html>
+<div class="muted small" style="margin:25px 0">IRANBOT — نسخه 1.0.2 — ساخته شده توسط PYTHONdvL010</div></div></body></html>
 '''
 
 
@@ -64,14 +64,14 @@ def root(): return redirect(url_for('dashboard') if session.get('admin_id') in A
 def dashboard():
     with db() as c:
         counts={
-          'users': c.execute('SELECT COUNT(DISTINCT user_id) FROM orders').fetchone()[0],
+          'users': c.execute("SELECT COUNT(*) FROM users").fetchone()[0] if c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").fetchone() else c.execute('SELECT COUNT(DISTINCT user_id) FROM orders').fetchone()[0],
           'products': c.execute('SELECT COUNT(*) FROM products').fetchone()[0],
           'orders': c.execute('SELECT COUNT(*) FROM orders').fetchone()[0],
           'paid': c.execute("SELECT COUNT(*) FROM orders WHERE status='paid'").fetchone()[0],
           'pending': c.execute("SELECT COUNT(*) FROM payments WHERE status='pending'").fetchone()[0],
           'panels': c.execute('SELECT COUNT(*) FROM panels').fetchone()[0],
         }
-    b='''<div class="grid">{% for k,v in counts.items() %}<div class="card"><div class="muted">{{k}}</div><div class="stat">{{v}}</div></div>{% endfor %}</div><div class="card"><h2>وضعیت تنظیمات</h2><p>نام سیستم: <b>IRANBOT</b></p><p>نسخه: <b>1.0.1</b></p><p>سازنده: <b>PYTHONdvL010</b></p><p>پیام خوش‌آمد: {{'فعال' if welcome else 'تنظیم نشده'}}</p><p>عضویت اجباری: {{'فعال' if mandatory else 'خاموش'}}</p></div>'''
+    b='''<div class="grid">{% for k,v in counts.items() %}<div class="card"><div class="muted">{{k}}</div><div class="stat">{{v}}</div></div>{% endfor %}</div><div class="card"><h2>وضعیت تنظیمات</h2><p>نام سیستم: <b>IRANBOT</b></p><p>نسخه: <b>1.0.2</b></p><p>سازنده: <b>PYTHONdvL010</b></p><p>پیام خوش‌آمد: {{'فعال' if welcome else 'تنظیم نشده'}}</p><p>عضویت اجباری: {{'فعال' if mandatory else 'خاموش'}}</p></div>'''
     return page(b,counts=counts,welcome=setting('welcome_message'),mandatory=setting('mandatory_channel_id'))
 
 @app.route('/welcome',methods=['GET','POST'])
@@ -130,12 +130,25 @@ def finance():
     b='''<div class="card"><h2>💳 بخش مالی</h2><form method="post"><label>شماره کارت</label><input name="card" value="{{card}}" maxlength="16"><label>نام صاحب کارت</label><input name="owner" value="{{owner}}"><button>💾 ذخیره</button></form><p>پرداخت‌های در انتظار: <b>{{pending}}</b></p></div>'''
     return page(b,card=setting('card_number'),owner=setting('card_owner'),pending=pending)
 
-@app.route('/panels')
+@app.route('/panels',methods=['GET','POST'])
 @admin_required
 def panels():
+    if request.method=='POST':
+        pt=request.form.get('panel_type','').strip(); name=request.form.get('name','').strip(); address=request.form.get('address','').strip(); user=request.form.get('username','').strip(); pw=request.form.get('password','').strip()
+        if pt and name and address and user and pw:
+            with db() as c: c.execute('INSERT INTO panels(panel_type,name,address,username,password,status) VALUES(?,?,?,?,?,?)',(pt,name,address.rstrip('/'),user,pw,'manual'))
+        return redirect(url_for('panels'))
     with db() as c: rows=c.execute('SELECT id,panel_type,name,address,status FROM panels ORDER BY id DESC').fetchall()
-    b='''<div class="card"><h2>🖥 پنل‌ها</h2><table class="table"><tr><th>ID</th><th>نوع</th><th>نام</th><th>آدرس</th><th>وضعیت</th></tr>{% for r in rows %}<tr>{% for x in r %}<td>{{x}}</td>{% endfor %}</tr>{% endfor %}</table></div>'''
+    b="""<div class="card"><h2>➕ افزودن پنل</h2><form method="post"><select name="panel_type" required><option value="pasarguard">Pasarguard</option><option value="marzban">Marzban</option><option value="3xui">3x-ui</option></select><input name="name" placeholder="نام پنل" required><input name="address" placeholder="https://panel.example.com:2096" required><input name="username" placeholder="Username" required><input name="password" type="password" placeholder="Password" required><button>➕ ثبت پنل</button></form></div><div class="card"><h2>🖥 پنل‌ها</h2><table class="table"><tr><th>ID</th><th>نوع</th><th>نام</th><th>آدرس</th><th>وضعیت</th><th>عملیات</th></tr>{% for r in rows %}<tr>{% for x in r %}<td>{{x}}</td>{% endfor %}<td><form method="post" action="{{url_for('panel_delete_web')}}" style="margin:0"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div>"""
     return page(b,rows=rows)
+
+@app.route('/panels/delete',methods=['POST'])
+@admin_required
+def panel_delete_web():
+    pid=int(request.form.get('id','0'))
+    with db() as c:
+        c.execute('DELETE FROM panels WHERE id=?',(pid,)); c.execute('DELETE FROM panel_groups WHERE panel_id=?',(pid,)); c.execute('DELETE FROM free_test_settings WHERE panel_id=?',(pid,))
+    return redirect(url_for('panels'))
 
 @app.route('/products',methods=['GET','POST'])
 @admin_required
@@ -147,9 +160,51 @@ def products():
         with db() as c: c.execute('INSERT INTO products(name,price,panel_id,data_limit_gb,expire_days) VALUES(?,?,?,?,?)',(request.form['name'],f'{price:,} تومان',pid,gb,days))
         return redirect(url_for('products'))
     with db() as c:
-        ps=c.execute('SELECT id,name,panel_type FROM panels ORDER BY id DESC').fetchall(); rows=c.execute('SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,pa.name FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id ORDER BY p.id DESC').fetchall()
-    b='''<div class="card"><h2>➕ افزودن محصول</h2><form method="post"><input name="name" placeholder="نام محصول" required><input name="price" placeholder="قیمت تومان" required><select name="panel_id" required><option value="">انتخاب پنل</option>{% for p in ps %}<option value="{{p[0]}}">#{{p[0]}} {{p[1]}} ({{p[2]}})</option>{% endfor %}</select><input name="gb" type="number" min="1" placeholder="حجم GB" required><input name="days" type="number" min="1" placeholder="مدت روز" required><button>➕ ثبت محصول</button></form></div><div class="card"><h2>📋 محصولات</h2><table class="table"><tr><th>ID</th><th>نام</th><th>قیمت</th><th>حجم</th><th>مدت</th><th>پنل</th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td>{{r[3]}}GB</td><td>{{r[4]}} روز</td><td>{{r[5] or '-'}}</td></tr>{% endfor %}</table></div>'''
+        ps=c.execute('SELECT id,name,panel_type FROM panels ORDER BY id DESC').fetchall(); rows=c.execute('SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,pa.name,p.active FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id ORDER BY p.id DESC').fetchall()
+    b="""<div class="card"><h2>➕ افزودن محصول</h2><form method="post"><input name="name" placeholder="نام محصول" required><input name="price" placeholder="قیمت تومان" required><select name="panel_id" required><option value="">انتخاب پنل</option>{% for p in ps %}<option value="{{p[0]}}">#{{p[0]}} {{p[1]}} ({{p[2]}})</option>{% endfor %}</select><input name="gb" type="number" min="1" placeholder="حجم GB" required><input name="days" type="number" min="1" placeholder="مدت روز" required><button>➕ ثبت محصول</button></form></div><div class="card"><h2>📋 محصولات</h2><table class="table"><tr><th>ID</th><th>نام</th><th>قیمت</th><th>حجم</th><th>مدت</th><th>پنل</th><th>عملیات</th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td>{{r[3]}}GB</td><td>{{r[4]}} روز</td><td>{{r[5] or '-'}}</td><td><form method="post" action="{{url_for('product_delete_web')}}" style="margin:0"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div>"""
     return page(b,ps=ps,rows=rows)
+
+@app.route('/products/delete',methods=['POST'])
+@admin_required
+def product_delete_web():
+    pid=int(request.form.get('id','0'))
+    with db() as c:
+        used=c.execute('SELECT COUNT(*) FROM orders WHERE product_id=?',(pid,)).fetchone()[0]
+        if used: c.execute('UPDATE products SET active=0 WHERE id=?',(pid,))
+        else: c.execute('DELETE FROM products WHERE id=?',(pid,)); c.execute('DELETE FROM configs WHERE product_id=?',(pid,))
+    return redirect(url_for('products'))
+
+@app.route('/users')
+@admin_required
+def users():
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', first_name TEXT DEFAULT '', is_blocked INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP)")
+        rows=c.execute("SELECT user_id,username,first_name,is_blocked FROM users ORDER BY last_seen DESC LIMIT 200").fetchall()
+    b="""<div class="card"><h2>👥 کاربران</h2><p class="muted">مدیریت کاربران ربات: موجودی، سفارش‌ها و مسدودسازی.</p><table class="table"><tr><th>ID</th><th>Username</th><th>نام</th><th>موجودی</th><th>وضعیت</th><th>عملیات</th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>@{{r[1] or '-'}}</td><td>{{r[2] or '-'}}</td><td>{{r[4]}}</td><td>{{'🚫 مسدود' if r[3] else '✅ فعال'}}</td><td><a href="{{url_for('user_detail_web',uid=r[0])}}">مدیریت</a></td></tr>{% endfor %}</table></div>"""
+    with db() as c:
+        rows2=[]
+        for r in rows:
+            bal=c.execute('SELECT COALESCE(balance,0) FROM wallets WHERE user_id=?',(r[0],)).fetchone(); rows2.append(r+(bal[0] if bal else 0,))
+    return page(b,rows=rows2)
+
+@app.route('/users/<int:uid>',methods=['GET','POST'])
+@admin_required
+def user_detail_web(uid):
+    if request.method=='POST':
+        action=request.form.get('action'); amount=int(request.form.get('amount','0') or 0)
+        with db() as c:
+            c.execute('INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)',(uid,))
+            if action=='add' and amount>0: c.execute('UPDATE wallets SET balance=balance+? WHERE user_id=?',(amount,uid))
+            elif action=='sub' and amount>0: c.execute('UPDATE wallets SET balance=MAX(0,balance-?) WHERE user_id=?',(amount,uid))
+            elif action=='block': c.execute('UPDATE users SET is_blocked=1 WHERE user_id=?',(uid,))
+            elif action=='unblock': c.execute('UPDATE users SET is_blocked=0 WHERE user_id=?',(uid,))
+        return redirect(url_for('user_detail_web',uid=uid))
+    with db() as c:
+        u=c.execute('SELECT user_id,username,first_name,is_blocked FROM users WHERE user_id=?',(uid,)).fetchone()
+        bal=c.execute('SELECT COALESCE(balance,0) FROM wallets WHERE user_id=?',(uid,)).fetchone(); orders=c.execute("SELECT o.id,p.name,o.status,o.subscription,o.created_at FROM orders o JOIN products p ON p.id=o.product_id WHERE o.user_id=? AND o.status='paid' ORDER BY o.id DESC",(uid,)).fetchall()
+    if not u: return page('<div class="card"><h2>❌ کاربر پیدا نشد</h2></div>')
+    b="""<div class="card"><h2>👤 مدیریت کاربر #{{u[0]}}</h2><p>ID: <b>{{u[0]}}</b></p><p>Username: <b>@{{u[1] or '-'}}</b></p><p>نام: <b>{{u[2] or '-'}}</b></p><p>💰 موجودی: <b>{{bal:,}} تومان</b></p><form method="post"><input name="amount" type="number" min="1" placeholder="مبلغ"><button name="action" value="add">➕ افزایش موجودی</button> <button name="action" value="sub" class="danger">➖ کاهش موجودی</button></form><form method="post" style="margin-top:10px"><button name="action" value="{{'unblock' if u[3] else 'block'}}" class="danger">{{'✅ رفع مسدودی' if u[3] else '🚫 مسدود کردن'}}</button></form></div><div class="card"><h2>📦 سفارش‌های تأییدشده</h2>{% for o in orders %}<div class="card"><b>#{{o[0]}} — {{o[1]}}</b><br>{{o[4]}}<br><span class="small">{{o[3] or '-'}}</span></div>{% else %}<p>سفارشی ندارد.</p>{% endfor %}</div>"""
+    return page(b,u=u,bal=(bal[0] if bal else 0),orders=orders)
 
 @app.route('/orders')
 @admin_required
