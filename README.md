@@ -1,40 +1,35 @@
-# Telegram Config Shop — Railway Demo
+# Config Shop Bot v3 — Railway
 
-این نسخه یک فروشگاه تلگرامی با پنل مدیریت و بخش مدیریت پنل‌هاست.
+## Features
+- Telegram config shop MVP
+- Numeric Telegram admin allow-list via `ADMIN_IDS`
+- Admin product creation
+- Panel registration: Marzban / Pasarguard / 3x-ui
+- Real API login test for the three panel types
+- Pasarguard inbound discovery and inbound connection by name/tag
+- Pasarguard groups automatically used to grant users access to registered inbound tags
+- Pasarguard 1 MB / 1 day test user creation with subscription URL
+- Demo wallet
+- SQLite persistence
 
-## امکانات
-- شناسایی ادمین با Telegram numeric ID از `ADMIN_IDS`
-- پنل مدیریت داخل بات
-- افزودن محصول: نام → قیمت تومان → انتخاب پنل
-- افزودن پنل با سه نوع:
-  - Marzban
-  - Pasarguard
-  - 3x-ui
-- هنگام افزودن پنل: آدرس → username → password
-- Demo Test برای بررسی کامل بودن URL و credentialها
-- نمایش لیست پنل‌ها
-- تست دوباره پنل
-- حذف پنل
-- SQLite برای محصولات، سفارش‌ها، کانفیگ‌ها و پنل‌ها
+## Railway variables
+```text
+BOT_TOKEN=...
+ADMIN_IDS=123456789,987654321
+DB_PATH=/app/data/shop.db
+```
 
-## نکته مهم درباره Demo Test
-در این نسخه، تست پنل **واقعاً به API پنل وصل نمی‌شود**؛ فقط فرمت آدرس و خالی نبودن username/password را بررسی می‌کند. برای تست واقعی باید API و نسخه دقیق هر پنل مشخص شود و endpoint/authentication مربوط به همان پنل پیاده‌سازی شود.
+Mount a Railway Volume at `/app/data` so SQLite survives redeploy/restart.
 
-## Railway
-1. این پروژه را به GitHub ببر یا فایل‌های آن را در یک Repository قرار بده.
-2. در Railway پروژه را از Repository بساز.
-3. Variables را تنظیم کن:
-   - `BOT_TOKEN`
-   - `ADMIN_IDS`
-   - `DB_PATH=/app/data/shop.db`
-4. برای ماندگاری SQLite یک Volume بساز و روی `/app/data` mount کن.
-5. Deploy کن.
+## Pasarguard flow
+1. Admin → 🖥 پنل‌ها → add Pasarguard.
+2. Send the base URL, username, password.
+3. After API login succeeds, open the Pasarguard panel card.
+4. `🔗 اتصال Inbound` → send the inbound name/tag. The bot checks `/api/inbounds` and stores the matching inbound tag.
+5. The bot uses a dedicated group (`botpanel<ID>`) whose `inbound_tags` are the saved inbounds. PasarGuard's group system is the access layer for subscriptions.
+6. `🧪 Pasarguard — تست Inbound` creates a 1 MB, 1-day test user with the registered inbound group and shows the subscription URL.
 
-## فرمت ADMIN_IDS
-برای یک ادمین:
-`123456789`
-
-برای چند ادمین:
-`123456789,987654321`
-
-توکن ربات و رمز پنل‌ها را داخل کد commit نکن.
+## Important
+- This version targets current PasarGuard v5-style APIs. PasarGuard documents groups as the mechanism connecting users to inbound tags, and the user API accepts `group_ids`.
+- The bot stores panel credentials in SQLite so it can retest the panel later. For production, encrypt these credentials or move them to a secret store.
+- Do not paste real panel credentials into public chats or screenshots.
