@@ -12,7 +12,7 @@ DB_PATH = os.getenv('DB_PATH', 'shop.db')
 ADMIN_IDS = {int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()}
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 WEB_SECRET = os.getenv('WEB_SECRET') or secrets.token_hex(32)
-VERSION = '1.0.4'
+VERSION = '1.0.5'
 
 PANEL_TYPES = {'marzban': 'Marzban', 'pasarguard': 'Pasarguard', '3xui': '3x-ui'}
 
@@ -156,16 +156,17 @@ def panel_login_sync(pt,address,username,password):
 def fetch_groups_sync(pid):
     with db() as c:
         row=c.execute('SELECT panel_type,address,username,password FROM panels WHERE id=?',(pid,)).fetchone()
-    if not row or row[0]!='pasarguard': return [],'پنل Pasarguard پیدا نشد.'
+        cached=[(r[0],r[1],([x for x in (r[2] or '').split(',') if x])) for r in c.execute('SELECT group_id,group_name,inbound_tags FROM panel_groups WHERE panel_id=? ORDER BY id',(pid,)).fetchall()]
+    if not row or row[0]!='pasarguard': return cached,'پنل Pasarguard پیدا نشد.'
     ok,reason,headers,base,client=panel_login_sync(*row)
-    if not ok: return [],reason
+    if not ok: return cached,reason
     try:
         r=client.get(f'{base}/api/groups',headers=headers)
-        if r.status_code in (401,403):
-            r=client.get(f'{base}/api/groups/simple',headers=headers)
-        if r.status_code in (401,403): return [],'این حساب اجازه مشاهده Groupها را ندارد.'
+        if r.status_code in (401,403): r=client.get(f'{base}/api/groups/simple',headers=headers)
+        if r.status_code in (401,403): return cached,'این حساب اجازه مشاهده Groupها را ندارد.'
         r.raise_for_status()
         groups=[x for x in (group_fields(i) for i in extract_list(r.json(),['groups','items','data'])) if x]
+        if not groups and cached: return cached,'API لیست Groupها را خالی برگرداند؛ Groupهای ذخیره‌شده نمایش داده شدند.'
         with db() as c:
             for gid,name,tags in groups:
                 old=c.execute('SELECT inbound_tags FROM panel_groups WHERE panel_id=? AND group_id=?',(pid,gid)).fetchone()
@@ -173,7 +174,7 @@ def fetch_groups_sync(pid):
                 c.execute('INSERT OR REPLACE INTO panel_groups(panel_id,group_id,group_name,inbound_tags) VALUES(?,?,?,?)',(pid,gid,name,saved))
         return groups,''
     except Exception as e:
-        return [],str(e)[:400]
+        return cached,str(e)[:400]
     finally:
         client.close()
 
@@ -307,21 +308,28 @@ def panel_test_web(pid):
 @app.route('/panels/groups/<int:pid>',methods=['GET','POST'])
 @admin_required
 def panel_groups_web(pid):
-    with db() as c: prow=c.execute('SELECT name,panel_type FROM panels WHERE id=?',(pid,)).fetchone()
-    if not prow or prow[1]!='pasarguard': flash('❌ پنل Pasarguard پیدا نشد.'); return redirect(url_for('panels'))
-    groups,err=fetch_groups_sync(pid)
-    if request.method=='POST':
-        selected=set(request.form.getlist('group_ids'))
-        with db() as c:
-            for gid,name,tags in groups:
-                if str(gid) in selected:
-                    c.execute('INSERT OR REPLACE INTO panel_groups(panel_id,group_id,group_name,inbound_tags) VALUES(?,?,?,?)',(pid,gid,name,','.join(tags)))
-                else:
-                    c.execute('DELETE FROM panel_groups WHERE panel_id=? AND group_id=?',(pid,gid))
-        flash('✅ Groupهای انتخاب‌شده ذخیره شدند.'); return redirect(url_for('panel_groups_web',pid=pid))
-    with db() as c: selected={str(r[0]) for r in c.execute('SELECT group_id FROM panel_groups WHERE panel_id=?',(pid,)).fetchall()}
-    b='''<div class="card"><div class="row" style="justify-content:space-between"><div><h2>🔗 مدیریت Groupها</h2><p class="muted">پنل: {{name}} — Groupهای فعال برای ساخت سرویس از اینجا انتخاب می‌شوند.</p></div><a class="btn dark" href="{{url_for('panels')}}">↩️ پنل‌ها</a></div>{% if err %}<div class="flash bad">❌ {{err}}</div>{% endif %}{% if groups %}<form method="post"><div class="checkgrid">{% for g in groups %}<label class="check"><input type="checkbox" name="group_ids" value="{{g[0]}}" {% if g[0]|string in selected %}checked{% endif %}><b>{{g[1]}}</b><div class="mini">ID: {{g[0]}}{% if g[2] %}<br>Inbound: {{g[2]|join(', ')}}{% endif %}</div></label>{% endfor %}</div><div class="actions" style="margin-top:15px"><button>💾 ذخیره Groupها</button><a class="btn dark" href="{{url_for('panel_groups_web',pid=pid)}}">🔄 بروزرسانی</a></div></form>{% else %}<div class="empty">Group قابل دسترسی پیدا نشد.</div>{% endif %}</div>'''
-    return page(b,name=prow[0],groups=groups,selected=selected,err=err)
+    try:
+        with db() as c: prow=c.execute('SELECT name,panel_type FROM panels WHERE id=?',(pid,)).fetchone()
+        if not prow or prow[1]!='pasarguard':
+            flash('❌ پنل Pasarguard پیدا نشد.')
+            return redirect(url_for('panels'))
+        groups,err=fetch_groups_sync(pid)
+        if request.method=='POST':
+            selected=set(request.form.getlist('group_ids'))
+            with db() as c:
+                for gid,name,tags in groups:
+                    if str(gid) in selected:
+                        c.execute('INSERT OR REPLACE INTO panel_groups(panel_id,group_id,group_name,inbound_tags) VALUES(?,?,?,?)',(pid,gid,name,','.join(tags)))
+                    else:
+                        c.execute('DELETE FROM panel_groups WHERE panel_id=? AND group_id=?',(pid,gid))
+            flash('✅ Groupهای انتخاب‌شده ذخیره شدند.')
+            return redirect(url_for('panel_groups_web',pid=pid))
+        with db() as c: selected={str(r[0]) for r in c.execute('SELECT group_id FROM panel_groups WHERE panel_id=?',(pid,)).fetchall()}
+        b="""<div class="card"><div class="row" style="justify-content:space-between"><div><h2>🔗 مدیریت Groupها</h2><p class="muted">پنل: {{name}} — Groupهای فعال برای ساخت سرویس از اینجا انتخاب می‌شوند.</p></div><a class="btn dark" href="{{url_for('panels')}}">↩️ پنل‌ها</a></div>{% if err %}<div class="flash bad">⚠️ {{err}}</div>{% endif %}{% if groups %}<form method="post"><div class="checkgrid">{% for g in groups %}<label class="check"><input type="checkbox" name="group_ids" value="{{g[0]}}" {% if g[0]|string in selected %}checked{% endif %}><b>{{g[1]}}</b><div class="mini">ID: {{g[0]}}{% if g[2] %}<br>Inbound: {{g[2]|join(', ')}}{% endif %}</div></label>{% endfor %}</div><div class="actions" style="margin-top:15px"><button>💾 ذخیره Groupها</button><a class="btn dark" href="{{url_for('panel_groups_web',pid=pid)}}">🔄 بروزرسانی</a></div></form>{% else %}<div class="empty">Group قابل دسترسی پیدا نشد.<br><span class="mini">اگر اتصال API موقتاً در دسترس نیست، ابتدا اتصال پنل را تست کن و دوباره وارد این بخش شو.</span></div>{% endif %}</div>"""
+        return page(b,name=prow[0],groups=groups,selected=selected,err=err)
+    except Exception as e:
+        msg=str(e)[:500].replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+        return page('<div class="card"><h2 class="bad">❌ خطا در بخش Groupها</h2><p class="muted">صفحه مدیریت Group نتوانست کامل اجرا شود.</p><div class="flash bad">'+msg+'</div><a class="btn dark" href="'+url_for('panels')+'">↩️ بازگشت به پنل‌ها</a></div>')
 
 @app.route('/panels/delete',methods=['POST'])
 @admin_required

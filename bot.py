@@ -140,6 +140,7 @@ def menu(user_id: int):
 
 def admin_menu():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 کاربران", callback_data="admin_users")],
         [InlineKeyboardButton("➕ افزودن محصول", callback_data="admin_add")],
         [InlineKeyboardButton("👋 پیام خوش‌آمد", callback_data="admin_welcome")],
         [InlineKeyboardButton("📢 عضویت اجباری", callback_data="admin_mandatory")],
@@ -345,6 +346,77 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("flow", None)
     await q.edit_message_text("🛠 پنل مدیریت\n\nیک بخش را انتخاب کن:", reply_markup=admin_menu())
 
+
+async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    with conn() as c:
+        rows=c.execute("""SELECT u.user_id,u.username,u.first_name,u.is_blocked,
+            COALESCE(w.balance,0),COUNT(o.id)
+            FROM users u LEFT JOIN wallets w ON w.user_id=u.user_id
+            LEFT JOIN orders o ON o.user_id=u.user_id
+            GROUP BY u.user_id ORDER BY u.last_seen DESC LIMIT 30""").fetchall()
+    lines=["👥 مدیریت کاربران","","آخرین کاربران:"]
+    buttons=[]
+    for uid,username,first_name,blocked,balance,orders_count in rows:
+        label=f"{'🚫' if blocked else '👤'} {first_name or username or uid} | {uid}"
+        buttons.append([InlineKeyboardButton(label[:55],callback_data=f"admin_user:{uid}")])
+    if rows:
+        for uid,username,first_name,blocked,balance,orders_count in rows[:10]:
+            lines.append(f"• {first_name or '-'} | @{username or '-'} | ID: {uid} | 💰 {balance:,} تومان")
+    else:
+        lines.append("هنوز کاربری ثبت نشده.")
+    buttons.append([InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")])
+    await q.edit_message_text("\n".join(lines),reply_markup=InlineKeyboardMarkup(buttons))
+
+async def admin_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    uid=int(q.data.split(":")[1])
+    with conn() as c:
+        u=c.execute("SELECT user_id,username,first_name,is_blocked,created_at,last_seen FROM users WHERE user_id=?",(uid,)).fetchone()
+        balance=c.execute("SELECT balance FROM wallets WHERE user_id=?",(uid,)).fetchone()
+        orders_count=c.execute("SELECT COUNT(*) FROM orders WHERE user_id=?",(uid,)).fetchone()[0]
+    if not u:
+        await q.edit_message_text("❌ کاربر پیدا نشد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ کاربران",callback_data="admin_users")]])); return
+    bal=balance[0] if balance else 0
+    status="🚫 مسدود" if u[3] else "✅ فعال"
+    buttons=[
+        [InlineKeyboardButton("➕ افزایش موجودی",callback_data=f"user_balance_add:{uid}"),InlineKeyboardButton("➖ کاهش موجودی",callback_data=f"user_balance_sub:{uid}")],
+        [InlineKeyboardButton("🔓 رفع مسدودی" if u[3] else "🚫 مسدود کردن",callback_data=f"user_toggle_block:{uid}")],
+        [InlineKeyboardButton("↩️ کاربران",callback_data="admin_users")]
+    ]
+    text=(f"👤 مدیریت کاربر\n\nID: {u[0]}\nنام: {u[2] or '-'}\nUsername: @{u[1] or '-'}\nوضعیت: {status}\n\n"
+          f"💰 موجودی: {bal:,} تومان\n📦 تعداد سفارش: {orders_count}\n🗓 ثبت: {u[4] or '-'}\n🕒 آخرین فعالیت: {u[5] or '-'}")
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
+
+async def admin_user_toggle_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    uid=int(q.data.split(":")[1])
+    if uid in ADMIN_IDS:
+        await q.answer("❌ ادمین قابل مسدودسازی نیست.",show_alert=True); return
+    with conn() as c:
+        row=c.execute("SELECT is_blocked FROM users WHERE user_id=?",(uid,)).fetchone()
+        if not row:
+            await q.answer("کاربر پیدا نشد.",show_alert=True); return
+        new=0 if row[0] else 1
+        c.execute("UPDATE users SET is_blocked=? WHERE user_id=?",(new,uid))
+    try:
+        await context.bot.send_message(uid,"🚫 دسترسی شما به ربات توسط مدیریت مسدود شد." if new else "✅ مسدودی حساب شما توسط مدیریت برداشته شد.")
+    except Exception: pass
+    await admin_user_detail(update,context)
+
+async def admin_user_balance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    parts=q.data.split(":"); uid=int(parts[1]); action=parts[0].replace("user_balance_","")
+    with conn() as c: exists=c.execute("SELECT 1 FROM users WHERE user_id=?",(uid,)).fetchone()
+    if not exists:
+        await q.edit_message_text("❌ کاربر پیدا نشد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ کاربران",callback_data="admin_users")]])); return
+    context.user_data["flow"]={"type":"admin_user_balance","user_id":uid,"action":action}
+    title="افزایش" if action=="add" else "کاهش"
+    await q.edit_message_text(f"💰 {title} موجودی\n\nمبلغ را به تومان فقط به عدد بفرست.",reply_markup=cancel_keyboard())
 
 async def admin_add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -1012,6 +1084,24 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if flow["type"]=="free_test_user":
         await update.message.reply_text("ℹ️ تست رایگان با حجم و زمان تنظیم‌شده توسط مدیریت ساخته می‌شود.",reply_markup=menu(user_id))
         return
+    if flow["type"]=="admin_user_balance":
+        if not text.replace(",","").replace("٬","").isdigit() or int(text.replace(",","").replace("٬",""))<=0:
+            await update.message.reply_text("❌ مبلغ باید عدد مثبت باشد."); return
+        amount=int(text.replace(",","").replace("٬","")); uid=int(flow["user_id"]); action=flow["action"]
+        with conn() as c:
+            c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)",(uid,))
+            current=c.execute("SELECT balance FROM wallets WHERE user_id=?",(uid,)).fetchone()[0]
+            if action=="sub" and current<amount:
+                await update.message.reply_text(f"❌ موجودی کافی نیست. موجودی فعلی: {current:,} تومان",reply_markup=admin_menu()); context.user_data.pop("flow",None); return
+            new_balance=current+amount if action=="add" else current-amount
+            c.execute("UPDATE wallets SET balance=? WHERE user_id=?",(new_balance,uid))
+        title="افزایش" if action=="add" else "کاهش"
+        try:
+            await context.bot.send_message(uid,f"💰 موجودی کیف پول شما {title} یافت.\n\nمبلغ: {amount:,} تومان\nموجودی جدید: {new_balance:,} تومان")
+        except Exception: pass
+        context.user_data.pop("flow",None)
+        await update.message.reply_text(f"✅ {title} موجودی انجام شد.\n\nUser ID: {uid}\nمبلغ: {amount:,} تومان\nموجودی جدید: {new_balance:,} تومان",reply_markup=admin_menu())
+        return
     if flow["type"]=="welcome_admin":
         with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('welcome_message',?)",(text,))
         context.user_data.pop("flow",None)
@@ -1358,6 +1448,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row and row[0]:
             await q.answer("🚫 دسترسی شما به ربات مسدود شده است.",show_alert=True); return
     if data=="admin": return await admin_panel(update,context)
+    if data=="admin_users": return await admin_users(update,context)
+    if data.startswith("admin_user:"): return await admin_user_detail(update,context)
+    if data.startswith("user_toggle_block:"): return await admin_user_toggle_block(update,context)
+    if data.startswith("user_balance_add:") or data.startswith("user_balance_sub:"): return await admin_user_balance_start(update,context)
     if data=="admin_add": return await admin_add_product(update,context)
     if data=="admin_welcome": return await admin_welcome(update,context)
     if data=="admin_mandatory": return await admin_mandatory(update,context)
