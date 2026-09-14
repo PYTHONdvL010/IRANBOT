@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from urllib.parse import urljoin
 import sqlite3
 import threading
@@ -170,35 +171,54 @@ def get_setting_sync(key):
         row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     return row[0] if row else ""
 
-async def mandatory_status(context, user_id: int):
-    if is_admin(user_id):
-        return True
-    enabled = get_setting_sync("mandatory_enabled") == "1"
-    channel_id = get_setting_sync("mandatory_channel_id")
-    if not enabled or not channel_id:
-        return True
-    try:
-        member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-        return member.status in ("member", "administrator", "creator")
-    except Exception:
-        return False
+def get_mandatory_channels():
+    raw=get_setting_sync("mandatory_channels")
+    if raw:
+        try:
+            data=json.loads(raw)
+            if isinstance(data,list): return data
+        except Exception: pass
+    cid=get_setting_sync("mandatory_channel_id")
+    if cid:
+        return [{"id":cid,"title":get_setting_sync("mandatory_channel_title") or "کانال ما","link":get_setting_sync("mandatory_channel_link") or ""}]
+    return []
 
-async def membership_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not user or await mandatory_status(context, user.id):
-        return True
-    link = get_setting_sync("mandatory_channel_link")
-    title = get_setting_sync("mandatory_channel_title") or "کانال ما"
-    buttons=[]
-    if link:
-        buttons.append([InlineKeyboardButton(f"📢 عضویت در {title}", url=link)])
-    buttons.append([InlineKeyboardButton("✅ عضو شدم / بررسی عضویت", callback_data="check_membership")])
-    text=f"⛔️ برای استفاده از ربات ابتدا باید عضو {title} شوی.\n\nبعد از عضویت روی «عضو شدم / بررسی عضویت» بزن."
+def save_mandatory_channels(channels):
+    payload=json.dumps(channels,ensure_ascii=False)
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channels',?)",(payload,))
+        if channels:
+            first=channels[0]
+            c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_id',?)",(str(first.get("id","")),))
+            c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_title',?)",(str(first.get("title","کانال ما")),))
+            c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_link',?)",(str(first.get("link","")),))
+
+async def mandatory_status(context,user_id:int):
+    if is_admin(user_id): return True
+    if get_setting_sync("mandatory_enabled")!="1": return True
+    channels=get_mandatory_channels()
+    if not channels: return True
+    for channel in channels:
+        try:
+            member=await context.bot.get_chat_member(chat_id=channel.get("id"),user_id=user_id)
+            if member.status not in ("member","administrator","creator"): return False
+        except Exception: return False
+    return True
+
+async def membership_gate(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    user=update.effective_user
+    if not user or await mandatory_status(context,user.id): return True
+    channels=get_mandatory_channels(); buttons=[]
+    for i,ch in enumerate(channels,1):
+        link=ch.get("link") or ""; title=ch.get("title") or f"کانال {i}"
+        if link: buttons.append([InlineKeyboardButton(f"📢 عضویت در {title}",url=link)])
+    buttons.append([InlineKeyboardButton("✅ عضو شدم / بررسی همه کانال‌ها",callback_data="check_membership")])
+    titles="\n".join(f"• {c.get('title') or 'کانال'}" for c in channels)
+    text=f"⛔️ برای استفاده از ربات ابتدا باید در همه کانال‌های زیر عضو شوی:\n\n{titles}\n\nبعد از عضویت در همه، روی «عضو شدم / بررسی همه کانال‌ها» بزن."
     if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        await update.callback_query.answer(); await update.callback_query.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
     elif update.message:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        await update.message.reply_text(text,reply_markup=InlineKeyboardMarkup(buttons))
     return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -333,13 +353,44 @@ async def admin_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["flow"]={"type":"welcome_admin"}
     await q.edit_message_text(f"👋 پیام خوش‌آمد\n\nپیام خوش‌آمدت را بنویس.\n\nمتغیرها:\n{{username}} = نام خوانده‌شده کاربر\n{{first_name}} = نام\n{{user_id}} = آیدی عددی\n\nپیام فعلی:\n{cur}",reply_markup=cancel_keyboard())
 
-async def admin_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_mandatory(update:Update,context:ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
-    cid=get_setting_sync("mandatory_channel_id"); title=get_setting_sync("mandatory_channel_title"); link=get_setting_sync("mandatory_channel_link"); enabled=get_setting_sync("mandatory_enabled")=="1"
+    channels=get_mandatory_channels(); lines=["📢 عضویت اجباری","","کانال‌های فعلی:"]
+    if channels:
+        for i,ch in enumerate(channels,1): lines.append(f"{i}. {ch.get('title') or 'بدون عنوان'} — {ch.get('id')}")
+    else: lines.append("هنوز کانالی ثبت نشده.")
+    buttons=[[InlineKeyboardButton("➕ افزودن کانال",callback_data="mandatory_add")]]
+    for i,ch in enumerate(channels): buttons.append([InlineKeyboardButton(f"🗑 حذف {ch.get('title') or ch.get('id')}",callback_data=f"mandatory_del:{i}")])
+    buttons.append([InlineKeyboardButton("🔛 فعال" if get_setting_sync("mandatory_enabled")=="1" else "🔴 خاموش",callback_data="mandatory_toggle")])
+    buttons.append([InlineKeyboardButton("↩️ بازگشت",callback_data="admin")])
+    await q.edit_message_text("\n".join(lines)+"\n\nاول ربات را با دسترسی‌های لازم ادمین همه کانال‌ها کن.",reply_markup=InlineKeyboardMarkup(buttons))
+
+async def mandatory_add_start(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
     context.user_data["flow"]={"type":"mandatory_admin","step":"channel_id"}
-    current=f"\n\nتنظیم فعلی:\nID: {cid or '-'}\nعنوان: {title or '-'}\nلینک: {link or '-'}\nوضعیت: {'فعال' if enabled else 'خاموش'}"
-    await q.edit_message_text("📢 عضویت اجباری\n\nاول ربات را با تمام دسترسی‌های لازم ادمین کانال کن، بعد ID عددی یا @username کانال را بفرست."+current,reply_markup=cancel_keyboard())
+    await q.edit_message_text("➕ افزودن کانال عضویت اجباری\n\nاول ربات را با دسترسی‌های لازم ادمین کانال کن، سپس ID عددی یا @username کانال را بفرست.",reply_markup=cancel_keyboard())
+
+async def mandatory_delete(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    try: idx=int(q.data.split(":")[1])
+    except Exception: return
+    channels=get_mandatory_channels()
+    if 0<=idx<len(channels):
+        removed=channels.pop(idx); save_mandatory_channels(channels)
+        if not channels:
+            with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_enabled','0')")
+        await q.answer(f"{removed.get('title') or 'کانال'} حذف شد.",show_alert=True)
+    await admin_mandatory(update,context)
+
+async def mandatory_toggle(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    enabled=get_setting_sync("mandatory_enabled")=="1"
+    with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_enabled',?)",("0" if enabled else "1",))
+    await admin_mandatory(update,context)
 
 async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer("در حال بررسی...")
@@ -939,8 +990,8 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 me=await context.bot.get_chat_member(chat_id=chat.id,user_id=context.bot.id)
                 if me.status not in ("administrator","creator"):
                     await update.message.reply_text("❌ ربات هنوز ادمین این کانال نیست. اول ربات را با دسترسی‌های لازم ادمین کن و دوباره ID/username را بفرست.",reply_markup=cancel_keyboard()); return
-                flow["channel_id"]=str(chat.id); flow["title"]=chat.title or channel; flow["link"]=text.strip() if text.strip().startswith("http") else (("https://t.me/"+text.strip().lstrip("@")) if text.strip().startswith("@") else get_setting_sync("mandatory_channel_link")); flow["step"]="link"
-                await update.message.reply_text("🔗 لینک عضویت کانال را بفرست (مثال: https://t.me/channel). اگر کانال عمومی است لینک @username هم قابل استفاده است.")
+                flow["channel_id"]=str(chat.id); flow["title"]=chat.title or channel; flow["step"]="link"
+                await update.message.reply_text("🔗 لینک عضویت این کانال را بفرست (مثال: https://t.me/channel).")
                 return
             except Exception as e:
                 await update.message.reply_text(f"❌ کانال پیدا نشد یا دسترسی ربات کافی نیست.\n\n{str(e)[:300]}",reply_markup=cancel_keyboard()); return
@@ -948,13 +999,13 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             link=text.strip()
             if not (link.startswith("http://") or link.startswith("https://")):
                 await update.message.reply_text("❌ لینک معتبر نیست. مثال: https://t.me/channel"); return
-            with conn() as c:
-                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_id',?)",(flow["channel_id"],))
-                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_title',?)",(flow["title"],))
-                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_channel_link',?)",(link,))
-                c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_enabled','1')")
+            channels=get_mandatory_channels()
+            channels=[c for c in channels if str(c.get("id"))!=str(flow["channel_id"])]
+            channels.append({"id":flow["channel_id"],"title":flow["title"],"link":link})
+            save_mandatory_channels(channels)
+            with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_enabled','1')")
             context.user_data.pop("flow",None)
-            await update.message.reply_text(f"✅ عضویت اجباری با ID {flow['channel_id']} فعال شد.",reply_markup=admin_menu()); return
+            await update.message.reply_text(f"✅ عضویت اجباری برای {flow['title']} فعال شد.\n\nتعداد کانال‌های اجباری: {len(channels)}",reply_markup=admin_menu()); return
     if flow["type"]=="product":
         if flow["step"]=="name":
             flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
@@ -1271,6 +1322,9 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data=="admin_add": return await admin_add_product(update,context)
     if data=="admin_welcome": return await admin_welcome(update,context)
     if data=="admin_mandatory": return await admin_mandatory(update,context)
+    if data=="mandatory_add": return await mandatory_add_start(update,context)
+    if data.startswith("mandatory_del:"): return await mandatory_delete(update,context)
+    if data=="mandatory_toggle": return await mandatory_toggle(update,context)
     if data=="check_membership": return await check_membership(update,context)
     if data=="admin_panels": return await admin_panels(update,context)
     if data=="add_panel": return await add_panel_start(update,context)

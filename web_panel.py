@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import secrets
+import json
 from functools import wraps
 from flask import Flask, request, redirect, url_for, session, render_template_string, abort
 
@@ -16,12 +17,12 @@ BASE = '''
 <title>IRANBOT — Admin</title><style>
 body{margin:0;background:#0f172a;color:#e5e7eb;font-family:Tahoma,Arial,sans-serif} .wrap{max-width:1180px;margin:30px auto;padding:0 16px}.nav{display:flex;gap:8px;flex-wrap:wrap;background:#111827;padding:12px;border-radius:14px}.nav a{color:#e5e7eb;text-decoration:none;background:#1f2937;padding:9px 12px;border-radius:10px}.card{background:#111827;border:1px solid #263244;border-radius:16px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}.stat{font-size:26px;font-weight:bold}.muted{color:#94a3b8}.ok{color:#86efac}.bad{color:#fca5a5}input,textarea,select{width:100%;box-sizing:border-box;background:#0b1220;color:#fff;border:1px solid #334155;border-radius:10px;padding:11px;margin:7px 0 14px}button{background:#22c55e;color:#06130a;border:0;border-radius:10px;padding:11px 16px;font-weight:bold;cursor:pointer}.danger{background:#ef4444;color:#fff}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.small{font-size:13px}.table{width:100%;border-collapse:collapse}.table td,.table th{border-bottom:1px solid #263244;padding:9px;text-align:right}.badge{padding:4px 8px;border-radius:8px;background:#1e293b}.login{max-width:430px;margin:100px auto}.flash{background:#1e293b;border-right:4px solid #22c55e;padding:10px;margin-bottom:10px;border-radius:8px}
 </style></head><body><div class="wrap">
-<div class="row" style="justify-content:space-between"><h1>🇮🇷 IRANBOT <span class="muted small">v1.0.0</span></h1>{% if session.get('admin_id') %}<a href="{{url_for('logout')}}">خروج</a>{% endif %}</div>
+<div class="row" style="justify-content:space-between"><h1>🇮🇷 IRANBOT <span class="muted small">v1.0.1</span></h1>{% if session.get('admin_id') %}<a href="{{url_for('logout')}}">خروج</a>{% endif %}</div>
 {% if session.get('admin_id') %}<div class="nav">
 <a href="{{url_for('dashboard')}}">داشبورد</a><a href="{{url_for('welcome')}}">پیام خوش‌آمد</a><a href="{{url_for('mandatory')}}">عضویت اجباری</a><a href="{{url_for('finance')}}">مالی</a><a href="{{url_for('panels')}}">پنل‌ها</a><a href="{{url_for('products')}}">محصولات</a><a href="{{url_for('orders')}}">سفارش‌ها</a><a href="{{url_for('free_tests')}}">تست رایگان</a><a href="{{url_for('discount')}}">کد تخفیف</a>
 </div>{% endif %}
 {% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}
-<div class="muted small" style="margin:25px 0">IRANBOT — نسخه 1.0.0 — ساخته شده توسط PYTHONdvL010</div></div></body></html>
+<div class="muted small" style="margin:25px 0">IRANBOT — نسخه 1.0.1 — ساخته شده توسط PYTHONdvL010</div></div></body></html>
 '''
 
 
@@ -70,7 +71,7 @@ def dashboard():
           'pending': c.execute("SELECT COUNT(*) FROM payments WHERE status='pending'").fetchone()[0],
           'panels': c.execute('SELECT COUNT(*) FROM panels').fetchone()[0],
         }
-    b='''<div class="grid">{% for k,v in counts.items() %}<div class="card"><div class="muted">{{k}}</div><div class="stat">{{v}}</div></div>{% endfor %}</div><div class="card"><h2>وضعیت تنظیمات</h2><p>نام سیستم: <b>IRANBOT</b></p><p>نسخه: <b>1.0.0</b></p><p>سازنده: <b>PYTHONdvL010</b></p><p>پیام خوش‌آمد: {{'فعال' if welcome else 'تنظیم نشده'}}</p><p>عضویت اجباری: {{'فعال' if mandatory else 'خاموش'}}</p></div>'''
+    b='''<div class="grid">{% for k,v in counts.items() %}<div class="card"><div class="muted">{{k}}</div><div class="stat">{{v}}</div></div>{% endfor %}</div><div class="card"><h2>وضعیت تنظیمات</h2><p>نام سیستم: <b>IRANBOT</b></p><p>نسخه: <b>1.0.1</b></p><p>سازنده: <b>PYTHONdvL010</b></p><p>پیام خوش‌آمد: {{'فعال' if welcome else 'تنظیم نشده'}}</p><p>عضویت اجباری: {{'فعال' if mandatory else 'خاموش'}}</p></div>'''
     return page(b,counts=counts,welcome=setting('welcome_message'),mandatory=setting('mandatory_channel_id'))
 
 @app.route('/welcome',methods=['GET','POST'])
@@ -84,10 +85,42 @@ def welcome():
 @app.route('/mandatory',methods=['GET','POST'])
 @admin_required
 def mandatory():
+    def channels():
+        raw=setting('mandatory_channels')
+        if raw:
+            try:
+                data=json.loads(raw)
+                if isinstance(data,list): return data
+            except Exception: pass
+        cid=setting('mandatory_channel_id')
+        return [{"id":cid,"title":setting('mandatory_channel_title') or 'کانال ما',"link":setting('mandatory_channel_link') or ''}] if cid else []
     if request.method=='POST':
-        set_setting('mandatory_channel_id',request.form.get('channel_id','').strip()); set_setting('mandatory_channel_title',request.form.get('title','').strip()); set_setting('mandatory_channel_link',request.form.get('link','').strip()); set_setting('mandatory_enabled','1' if request.form.get('enabled') else '0'); return redirect(url_for('mandatory'))
-    b='''<div class="card"><h2>📢 عضویت اجباری</h2><p class="muted">ابتدا ربات را با دسترسی‌های لازم ادمین کانال کن، سپس ID یا @username کانال را وارد کن.</p><form method="post"><label>ID / @username کانال</label><input name="channel_id" value="{{cid}}" placeholder="@mychannel یا -100123..." required><label>عنوان کانال</label><input name="title" value="{{title}}"><label>لینک عضویت</label><input name="link" value="{{link}}" placeholder="https://t.me/mychannel"><label><input type="checkbox" name="enabled" style="width:auto" {% if enabled %}checked{% endif %}> فعال باشد</label><br><button>💾 ذخیره تنظیمات</button></form></div>'''
-    return page(b,cid=setting('mandatory_channel_id'),title=setting('mandatory_channel_title'),link=setting('mandatory_channel_link'),enabled=setting('mandatory_enabled')=='1')
+        cid=request.form.get('channel_id','').strip(); title=request.form.get('title','').strip() or cid; link=request.form.get('link','').strip()
+        if cid and link:
+            cs=[c for c in channels() if str(c.get('id'))!=cid]
+            cs.append({"id":cid,"title":title,"link":link})
+            set_setting('mandatory_channels',json.dumps(cs,ensure_ascii=False)); set_setting('mandatory_enabled','1')
+            set_setting('mandatory_channel_id',cid); set_setting('mandatory_channel_title',title); set_setting('mandatory_channel_link',link)
+        return redirect(url_for('mandatory'))
+    cs=channels()
+    b='''<div class="card"><h2>📢 عضویت اجباری</h2><p class="muted">می‌توانی چند کانال اضافه کنی؛ کاربر باید در همه کانال‌ها عضو باشد.</p><form method="post"><label>ID / @username کانال</label><input name="channel_id" placeholder="@mychannel یا -100123..." required><label>عنوان کانال</label><input name="title" placeholder="مثلاً کانال اصلی"><label>لینک عضویت</label><input name="link" placeholder="https://t.me/mychannel" required><button>➕ افزودن کانال</button></form></div><div class="card"><h3>کانال‌های فعلی</h3>{% if channels %}<table class="table"><tr><th>#</th><th>عنوان</th><th>ID</th><th>لینک</th><th>عملیات</th></tr>{% for c in channels %}<tr><td>{{loop.index}}</td><td>{{c.title}}</td><td>{{c.id}}</td><td>{{c.link}}</td><td><form method="post" action="{{url_for('mandatory_delete_web')}}" style="margin:0"><input type="hidden" name="id" value="{{c.id}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table>{% else %}<p class="muted">هنوز کانالی ثبت نشده.</p>{% endif %}<p>وضعیت: <b>{{'فعال' if enabled else 'خاموش'}}</b></p><form method="post" action="{{url_for('mandatory_toggle_web')}}"><button>{{'🔴 خاموش کردن' if enabled else '🟢 فعال کردن'}}</button></form></div>'''
+    return page(b,channels=cs,enabled=setting('mandatory_enabled')=='1')
+
+@app.route('/mandatory/delete',methods=['POST'])
+@admin_required
+def mandatory_delete_web():
+    cid=request.form.get('id','').strip(); raw=setting('mandatory_channels')
+    try: cs=json.loads(raw) if raw else []
+    except Exception: cs=[]
+    cs=[c for c in cs if str(c.get('id'))!=cid]
+    set_setting('mandatory_channels',json.dumps(cs,ensure_ascii=False)); set_setting('mandatory_enabled','1' if cs else '0')
+    return redirect(url_for('mandatory'))
+
+@app.route('/mandatory/toggle',methods=['POST'])
+@admin_required
+def mandatory_toggle_web():
+    set_setting('mandatory_enabled','0' if setting('mandatory_enabled')=='1' else '1')
+    return redirect(url_for('mandatory'))
 
 @app.route('/finance',methods=['GET','POST'])
 @admin_required
