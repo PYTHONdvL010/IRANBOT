@@ -1,26 +1,40 @@
-# Config Shop Telegram Bot
+# Telegram Config Shop — Railway Demo
 
-بات فروشگاهی پایه برای فروش و تحویل خودکار کانفیگ‌هایی که خودت در موجودی قرار می‌دهی.
+این نسخه یک فروشگاه تلگرامی با پنل مدیریت و بخش مدیریت پنل‌هاست.
 
-## Railway Variables
+## امکانات
+- شناسایی ادمین با Telegram numeric ID از `ADMIN_IDS`
+- پنل مدیریت داخل بات
+- افزودن محصول: نام → قیمت تومان → انتخاب پنل
+- افزودن پنل با سه نوع:
+  - Marzban
+  - Pasarguard
+  - 3x-ui
+- هنگام افزودن پنل: آدرس → username → password
+- Demo Test برای بررسی کامل بودن URL و credentialها
+- نمایش لیست پنل‌ها
+- تست دوباره پنل
+- حذف پنل
+- SQLite برای محصولات، سفارش‌ها، کانفیگ‌ها و پنل‌ها
 
-BOT_TOKEN=توکن BotFather
-ADMIN_IDS=123456789
-DB_PATH=/app/data/shop.db
+## نکته مهم درباره Demo Test
+در این نسخه، تست پنل **واقعاً به API پنل وصل نمی‌شود**؛ فقط فرمت آدرس و خالی نبودن username/password را بررسی می‌کند. برای تست واقعی باید API و نسخه دقیق هر پنل مشخص شود و endpoint/authentication مربوط به همان پنل پیاده‌سازی شود.
 
-برای ماندگاری SQLite، یک Volume روی `/app/data` قرار بده.
+## Railway
+1. این پروژه را به GitHub ببر یا فایل‌های آن را در یک Repository قرار بده.
+2. در Railway پروژه را از Repository بساز.
+3. Variables را تنظیم کن:
+   - `BOT_TOKEN`
+   - `ADMIN_IDS`
+   - `DB_PATH=/app/data/shop.db`
+4. برای ماندگاری SQLite یک Volume بساز و روی `/app/data` mount کن.
+5. Deploy کن.
 
-## دستورات ادمین
+## فرمت ADMIN_IDS
+برای یک ادمین:
+`123456789`
 
-/admin
-/addproduct NAME | PRICE | DESCRIPTION
-/addconfig PRODUCT_ID | CONFIG
-/products
-/orders
-/approve ORDER_ID
+برای چند ادمین:
+`123456789,987654321`
 
-## جریان خرید
-
-کاربر محصول را انتخاب می‌کند → سفارش ساخته می‌شود → پرداخت خارج از این MVP تأیید می‌شود → ادمین `/approve ORDER_ID` می‌زند → اولین کانفیگ موجود تحویل کاربر می‌شود.
-
-این نسخه عمداً درگاه پرداخت خاصی را هاردکد نمی‌کند؛ می‌توان در مرحله بعد Stripe، درگاه محلی یا روش پرداخت موردنظر را اضافه کرد.
+توکن ربات و رمز پنل‌ها را داخل کد commit نکن.
