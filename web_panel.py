@@ -12,7 +12,7 @@ DB_PATH = os.getenv('DB_PATH', 'shop.db')
 ADMIN_IDS = {int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()}
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 WEB_SECRET = os.getenv('WEB_SECRET') or secrets.token_hex(32)
-VERSION = '1.0.3'
+VERSION = '1.0.4'
 
 PANEL_TYPES = {'marzban': 'Marzban', 'pasarguard': 'Pasarguard', '3xui': '3x-ui'}
 
@@ -296,7 +296,7 @@ def panels():
 @app.route('/panels/test/<int:pid>')
 @admin_required
 def panel_test_web(pid):
-    with db() as c: row=c.execute('SELECT panel_type,name,address,username,password FROM panels WHERE id=?',(pid,)).fetchone()
+    with db() as c: row=c.execute('SELECT panel_type,address,username,password FROM panels WHERE id=?',(pid,)).fetchone()
     if not row: flash('❌ پنل پیدا نشد.'); return redirect(url_for('panels'))
     ok,reason,_,_,client=panel_login_sync(*row)
     if client: client.close()
@@ -326,7 +326,9 @@ def panel_groups_web(pid):
 @app.route('/panels/delete',methods=['POST'])
 @admin_required
 def panel_delete_web():
-    pid=int(request.form.get('id','0'))
+    
+    try: pid=int(request.form.get('id','0'))
+    except Exception: flash('❌ شناسه نامعتبر است.'); return redirect(url_for('panels'))
     with db() as c:
         c.execute('UPDATE products SET panel_id=NULL WHERE panel_id=?',(pid,)); c.execute('DELETE FROM panel_groups WHERE panel_id=?',(pid,)); c.execute('DELETE FROM free_test_settings WHERE panel_id=?',(pid,)); c.execute('DELETE FROM panels WHERE id=?',(pid,))
     flash('🗑 پنل حذف شد.'); return redirect(url_for('panels'))
@@ -393,7 +395,7 @@ def users():
         rows2=[]
         for r in rows:
             bal=c.execute('SELECT COALESCE(balance,0) FROM wallets WHERE user_id=?',(r[0],)).fetchone(); count=c.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'",(r[0],)).fetchone()[0]; rows2.append(r+(bal[0] if bal else 0,count))
-    b='''<div class="hero"><h2>👥 مدیریت کاربران</h2><p>مدیریت کاربران فقط از وب‌پنل انجام می‌شود: موجودی، سفارش‌ها و مسدودسازی.</p></div><div class="card"><form class="row" method="get"><input style="flex:1;min-width:220px;margin:0" name="q" value="{{q}}" placeholder="جستجو با ID، username یا نام"><button>🔎 جستجو</button></form></div><div class="card"><div class="table-wrap"><table class="table"><tr><th>ID</th><th>Username</th><th>نام</th><th>موجودی</th><th>سرویس</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>@{{r[1] or '-'}}</td><td>{{r[2] or '-'}}</td><td>{{r[4]:,}} تومان</td><td>{{r[5]}}</td><td><span class="badge {{'bad' if r[3] else 'ok'}}">{{'🚫 مسدود' if r[3] else '✅ فعال'}}</span></td><td><a class="btn dark" href="{{url_for('user_detail_web',uid=r[0])}}">مدیریت</a></td></tr>{% else %}<tr><td colspan="7" class="empty">کاربری پیدا نشد.</td></tr>{% endfor %}</table></div></div>'''
+    b='''<div class="hero"><h2>👥 مدیریت کاربران</h2><p>مدیریت کاربران فقط از وب‌پنل انجام می‌شود: موجودی، سفارش‌ها و مسدودسازی.</p></div><div class="card"><form class="row" method="get"><input style="flex:1;min-width:220px;margin:0" name="q" value="{{q}}" placeholder="جستجو با ID، username یا نام"><button>🔎 جستجو</button></form></div><div class="card"><div class="table-wrap"><table class="table"><tr><th>ID</th><th>Username</th><th>نام</th><th>موجودی</th><th>سرویس</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>@{{r[1] or '-'}}</td><td>{{r[2] or '-'}}</td><td>{{"{:,}".format(r[4])}} تومان</td><td>{{r[5]}}</td><td><span class="badge {{'bad' if r[3] else 'ok'}}">{{'🚫 مسدود' if r[3] else '✅ فعال'}}</span></td><td><a class="btn dark" href="{{url_for('user_detail_web',uid=r[0])}}">مدیریت</a></td></tr>{% else %}<tr><td colspan="7" class="empty">کاربری پیدا نشد.</td></tr>{% endfor %}</table></div></div>'''
     return page(b,rows=rows2,q=q)
 
 @app.route('/users/<int:uid>',methods=['GET','POST'])
@@ -419,7 +421,7 @@ def user_detail_web(uid):
         u=c.execute('SELECT user_id,username,first_name,is_blocked,created_at,last_seen FROM users WHERE user_id=?',(uid,)).fetchone()
         bal=c.execute('SELECT COALESCE(balance,0) FROM wallets WHERE user_id=?',(uid,)).fetchone(); orders=c.execute("SELECT o.id,p.name,o.status,o.subscription,o.panel_username,o.created_at FROM orders o JOIN products p ON p.id=o.product_id WHERE o.user_id=? AND o.status='paid' ORDER BY o.id DESC",(uid,)).fetchall()
     if not u: return page('<div class="card"><h2>❌ کاربر پیدا نشد</h2><a class="btn dark" href="{{url_for(\'users\')}}">بازگشت</a></div>')
-    b='''<div class="hero"><div class="row" style="justify-content:space-between"><div><h2>👤 {{u[2] or u[1] or u[0]}}</h2><p>@{{u[1] or '-'}} · ID {{u[0]}}</p></div><span class="badge {{'bad' if u[3] else 'ok'}}">{{'🚫 مسدود' if u[3] else '✅ فعال'}}</span></div></div><div class="grid"><div class="statcard"><div class="statlabel">موجودی کیف پول</div><div class="stat">{{bal:,}}</div><div class="kpi">تومان</div></div><div class="statcard"><div class="statlabel">سرویس‌های فعال/تحویل‌شده</div><div class="stat">{{orders|length}}</div></div></div><div class="card"><h3>💰 مدیریت موجودی</h3><form method="post"><input name="amount" type="number" min="1" placeholder="مبلغ به تومان"><div class="actions"><button name="action" value="add">➕ افزایش موجودی</button><button name="action" value="sub" class="danger">➖ کاهش موجودی</button></div></form><form method="post" style="margin-top:10px"><button name="action" value="{{'unblock' if u[3] else 'block'}}" class="{{'btn dark' if u[3] else 'danger'}}">{{'✅ رفع مسدودی' if u[3] else '🚫 مسدود کردن'}}</button></form></div><div class="card"><h3>📦 سفارش‌های تأییدشده</h3>{% for o in orders %}<div class="card"><div class="row" style="justify-content:space-between"><b>#{{o[0]}} — {{o[1]}}</b><span class="badge ok">paid</span></div><p class="muted small">{{o[5]}} · {{o[4] or '-'}}</p><div class="mini">{{o[3] or 'Subscription موجود نیست'}}</div></div>{% else %}<div class="empty">سفارشی ندارد.</div>{% endfor %}</div>'''
+    b='''<div class="hero"><div class="row" style="justify-content:space-between"><div><h2>👤 {{u[2] or u[1] or u[0]}}</h2><p>@{{u[1] or '-'}} · ID {{u[0]}}</p></div><span class="badge {{'bad' if u[3] else 'ok'}}">{{'🚫 مسدود' if u[3] else '✅ فعال'}}</span></div></div><div class="grid"><div class="statcard"><div class="statlabel">موجودی کیف پول</div><div class="stat">{{"{:,}".format(bal)}}</div><div class="kpi">تومان</div></div><div class="statcard"><div class="statlabel">سرویس‌های فعال/تحویل‌شده</div><div class="stat">{{orders|length}}</div></div></div><div class="card"><h3>💰 مدیریت موجودی</h3><form method="post"><input name="amount" type="number" min="1" placeholder="مبلغ به تومان"><div class="actions"><button name="action" value="add">➕ افزایش موجودی</button><button name="action" value="sub" class="danger">➖ کاهش موجودی</button></div></form><form method="post" style="margin-top:10px"><button name="action" value="{{'unblock' if u[3] else 'block'}}" class="{{'btn dark' if u[3] else 'danger'}}">{{'✅ رفع مسدودی' if u[3] else '🚫 مسدود کردن'}}</button></form></div><div class="card"><h3>📦 سفارش‌های تأییدشده</h3>{% for o in orders %}<div class="card"><div class="row" style="justify-content:space-between"><b>#{{o[0]}} — {{o[1]}}</b><span class="badge ok">paid</span></div><p class="muted small">{{o[5]}} · {{o[4] or '-'}}</p><div class="mini">{{o[3] or 'Subscription موجود نیست'}}</div></div>{% else %}<div class="empty">سفارشی ندارد.</div>{% endfor %}</div>'''
     return page(b,u=u,bal=(bal[0] if bal else 0),orders=orders)
 
 @app.route('/orders')

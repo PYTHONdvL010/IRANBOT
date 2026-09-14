@@ -1100,7 +1100,7 @@ async def payment_card_info(amount,kind="order"):
     card=await get_setting("card_number"); owner=await get_setting("card_owner")
     if not card: return None
     if kind == "wallet":
-        return f"💰 شارژ کیف پول\n\n💰 مبلغ: {amount:,} تومان\n\n💳 شماره کارت: {card}\n\nمبلغ بالا را واریز کن و عکس رسید را همینجا ارسال کن."
+        return f"💰 شارژ کیف پول\n\n💰 مبلغ: {amount:,} تومان\n\n💳 شماره کارت: {card}\n👤 به نام: {owner}\n\nمبلغ بالا را واریز کن و عکس رسید را همینجا ارسال کن."
     if not owner: return None
     return f"💳 پرداخت سفارش\n\n💰 مبلغ: {amount:,} تومان\n\n💳 شماره کارت: {card}\n👤 به نام: {owner}\n\nمبلغ بالا را واریز کن و عکس رسید را همینجا ارسال کن."
 
