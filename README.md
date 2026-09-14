@@ -1,4 +1,4 @@
-# ⚡ IRANBOT v1.0.5
+# ⚡ IRANBOT v1.0.6
 ### Telegram VPN / Config Shop — Railway Ready
 
 > فروشگاه حرفه‌ای سرویس VPN و کانفیگ در Telegram با پنل مدیریت Web، پرداخت، کیف پول، تست رایگان و اتصال به Marzban / Pasarguard / 3x-ui.
@@ -22,6 +22,7 @@ Telegram Bot
 ├── 📢 عضویت اجباری
 ├── 🎫 پشتیبانی
 ├── 👥 مدیریت کاربران
+├── 💾 پشتیبان‌گیری
 │
 └── 🌐 Web Admin Panel
        │
@@ -33,12 +34,144 @@ Telegram Bot
        ├── امور مالی
        ├── تست رایگان
        ├── خوش‌آمدگویی
-       └── عضویت اجباری
+       ├── عضویت اجباری
+       └── پشتیبان‌گیری
 ```
 
 ---
 
-# 🚀 امکانات
+# ✨ تغییرات و امکانات اضافه‌شده در نسخه 1.0.6
+
+نسخه **1.0.6** تمام امکانات قبلی را حفظ می‌کند و امکانات جدید زیر را اضافه می‌کند.
+
+## 💾 سیستم Backup و Restore
+
+### 🤖 داخل Telegram Bot
+
+در منوی مدیریت بخش جدید:
+
+```text
+💾 پشتیبان‌گیری
+```
+
+اضافه شده است.
+
+امکانات:
+
+```text
+📥 گرفتن فایل Backup
+📤 وارد کردن فایل Backup
+1️⃣ فعال کردن Backup هر 7 روز
+2️⃣ غیرفعال کردن Backup هفتگی
+```
+
+### 📥 گرفتن Backup
+
+ادمین می‌تواند در هر زمان یک Backup کامل از دیتابیس SQLite دریافت کند.
+
+Backup به‌صورت یک کپی سازگار از دیتابیس ساخته می‌شود و فایل `.db` در اختیار ادمین قرار می‌گیرد.
+
+### 📤 Restore
+
+ادمین می‌تواند فایل Backup را وارد Bot کند.
+
+فرمت‌های قابل قبول:
+
+```text
+.db
+.sqlite
+.sqlite3
+```
+
+قبل از Restore فایل بررسی می‌شود:
+
+```text
+✓ SQLite integrity check
+✓ بررسی جدول‌های اصلی
+✓ بررسی معتبر بودن دیتابیس
+```
+
+بعد از تأیید، دیتابیس جدید جایگزین دیتابیس فعال می‌شود.
+
+### ⏰ Backup خودکار هر 7 روز
+
+ادمین می‌تواند Backup هفتگی را فعال کند.
+
+روند کار:
+
+```text
+فعال‌سازی
+   ↓
+بررسی زمان آخرین Backup
+   ↓
+هر 7 روز
+   ↓
+ساخت Backup
+   ↓
+ارسال فایل برای ADMIN_IDS
+```
+
+تنظیم فعال/غیرفعال بودن Backup و زمان آخرین ارسال در دیتابیس ذخیره می‌شود.
+
+### 🌐 Backup در Web Admin Panel
+
+در Web Panel نیز بخش:
+
+```text
+💾 پشتیبان‌گیری
+```
+
+اضافه شده است.
+
+امکانات:
+
+```text
+📥 دانلود Backup
+📤 Restore Backup
+1️⃣ فعال کردن Backup هفتگی
+2️⃣ غیرفعال کردن Backup هفتگی
+```
+
+تنظیم Backup هفتگی در Bot و Web Panel مشترک است.
+
+---
+
+## 🗄 اطلاعات موجود در Backup
+
+Backup از کل دیتابیس SQLite تهیه می‌شود و تمام جدول‌ها و اطلاعات موجود در دیتابیس را شامل می‌شود، از جمله:
+
+```text
+users
+wallets
+panels
+panel_groups
+products
+orders
+configs
+payments
+settings
+support_tickets
+free_test_settings
+free_test_usage
+```
+
+بنابراین اطلاعات کاربران، کیف پول، پنل‌ها، Group ها، محصولات، سفارش‌ها، پرداخت‌ها، تنظیمات، تیکت‌ها و تست‌های رایگان داخل Backup قرار می‌گیرند.
+
+---
+
+## 🔐 نکات امنیتی Backup
+
+فایل Backup شامل اطلاعات حساس دیتابیس است.
+
+```text
+⚠️ Backup را داخل GitHub عمومی قرار ندهید.
+⚠️ Backup را در اختیار افراد غیرمجاز قرار ندهید.
+⚠️ Backup را مانند اطلاعات حساس پروژه نگهداری کنید.
+```
+
+---
+
+# 🚀 امکانات قبلی پروژه
 
 ## 🤖 Telegram Bot
 
@@ -73,6 +206,7 @@ Telegram Bot
 - 📢 مدیریت عضویت اجباری
 - 👋 تنظیم پیام خوش‌آمد
 - 📦 مدیریت سفارش‌ها
+- 💾 Backup / Restore
 
 ---
 
@@ -93,6 +227,7 @@ Telegram Bot
 🧾 Orders
 🎁 Free Tests
 🏷 Discount
+💾 Backup
 ```
 
 ### Dashboard
@@ -422,14 +557,6 @@ ADMIN_IDS=آیدی_تلگرام_ادمین
 DB_PATH=/app/data/shop.db
 ```
 
-### مثال
-
-```env
-BOT_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxx
-ADMIN_IDS=123456789
-DB_PATH=/app/data/shop.db
-```
-
 ---
 
 # 💾 مرحله 4 — Volume
@@ -534,9 +661,7 @@ Panels
 
 ---
 
-# 🐞 Bug Fix — نسخه 1.0.5
-
-این نسخه شامل اصلاحات مربوط به **Bug**های نسخه 1.0.5 است و شماره نسخه پروژه همچنان **1.0.5** باقی می‌ماند.
+# 🐞 اصلاحات نسخه 1.0.6
 
 ## 🔧 مشکل Group ها
 
@@ -548,7 +673,7 @@ pid is undefined
 
 در صفحه Group های Web Panel باعث می‌شد صفحه مدیریت Group به‌درستی کامل نشود.
 
-این مشکل اصلاح شده است.
+این مشکل در نسخه **1.0.6** اصلاح شده است.
 
 ### نتیجه
 
@@ -573,27 +698,7 @@ pid is undefined
 
 ---
 
-# 🩺 اگر بعد از Deploy هنوز Group ها نمایش داده نشدند
-
-این موارد را بررسی کنید:
-
-```text
-[1] Panel Address صحیح است
-[2] Username صحیح است
-[3] Password صحیح است
-[4] پنل واقعاً Pasarguard است
-[5] API پنل از Railway قابل دسترسی است
-[6] اکانت پنل دسترسی لازم را دارد
-[7] Railway Logs بررسی شده است
-```
-
-اگر صفحه باز می‌شود ولی Groupی نمایش داده نمی‌شود، ممکن است مشکل از API یا Permission خود Pasarguard باشد، نه Web Panel.
-
----
-
 # 🧪 چک‌لیست تست بعد از Deploy
-
-بعد از Deploy این موارد را یکی‌یکی تست کنید:
 
 ```text
 [ ] Bot /start
@@ -618,6 +723,12 @@ pid is undefined
 [ ] مدیریت کاربران
 [ ] Block / Unblock
 [ ] افزایش / کاهش موجودی
+[ ] گرفتن Backup از Bot
+[ ] Restore Backup در Bot
+[ ] دانلود Backup از Web Panel
+[ ] Restore Backup در Web Panel
+[ ] فعال‌سازی Backup هفتگی
+[ ] غیرفعال‌سازی Backup هفتگی
 ```
 
 ---
@@ -631,6 +742,7 @@ BOT_TOKEN
 رمز پنل VPN
 اطلاعات حساس کاربران
 Database
+Backup
 ```
 
 توکن Bot را فقط در Railway Variables قرار دهید.
@@ -678,6 +790,7 @@ Support
 Free Test
 Mandatory Membership
 Panel API
+Backup / Restore
 ```
 
 ### `web_panel.py`
@@ -699,8 +812,6 @@ Panel API
 ---
 
 # 🏁 خلاصه نصب سریع
-
-اگر بخواهید سریع راه‌اندازی کنید:
 
 ```text
 1. Fork Repository
@@ -732,6 +843,8 @@ Panel API
 14. ساخت Product
         ↓
 15. تست خرید
+        ↓
+16. فعال‌سازی Backup هفتگی
 ```
 
 ---
@@ -752,10 +865,12 @@ Panel API
 📢 Mandatory Membership
 👥 User Management
 🎫 Support
+💾 Backup / Restore
+⏰ Weekly Backup
 🗄 SQLite
 ☁️ Railway
 ```
 
-**Version: 1.0.5**
+**Version: 1.0.6**
 
-> این README مربوط به **نسخه 1.0.5** است و Bug Fix مربوط به Group های Web Panel در همین نسخه اعمال شده است.
+> این README مربوط به **نسخه 1.0.6** است. در این نسخه سیستم Backup / Restore و Backup خودکار هر 7 روز اضافه شده و مشکل Group های Web Panel نیز اصلاح شده است.
