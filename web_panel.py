@@ -331,8 +331,29 @@ def mandatory():
             set_setting('mandatory_channels',json.dumps(cs,ensure_ascii=False)); set_setting('mandatory_enabled','1'); flash('✅ کانال ذخیره شد.')
         return redirect(url_for('mandatory'))
     cs=channels()
-    b='''<div class="card"><h2>📢 عضویت اجباری</h2><p class="muted">کاربر باید در همه کانال‌های فعال عضو باشد.</p><form method="post"><label>ID یا @username</label><input name="channel_id" placeholder="@mychannel یا -100123..." required><label>عنوان</label><input name="title" placeholder="کانال اصلی"><label>لینک عضویت</label><input name="link" placeholder="https://t.me/mychannel" required><button>➕ افزودن کانال</button></form></div><div class="card"><div class="row" style="justify-content:space-between"><h3>کانال‌های فعلی</h3><span class="badge {{'ok' if enabled else 'bad'}}">{{'فعال' if enabled else 'خاموش'}}</span></div>{% if channels %}<div class="table-wrap"><table class="table"><tr><th>#</th><th>عنوان</th><th>ID</th><th>لینک</th><th></th></tr>{% for c in channels %}<tr><td>{{loop.index}}</td><td>{{c.title}}</td><td>{{c.id}}</td><td class="small">{{c.link}}</td><td><form method="post" action="{{url_for('mandatory_delete_web')}}"><input type="hidden" name="id" value="{{c.id}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div>{% else %}<div class="empty">هنوز کانالی ثبت نشده.</div>{% endif %}<form method="post" action="{{url_for('mandatory_toggle_web')}}"><button class="btn dark">{{'🔴 خاموش کردن' if enabled else '🟢 فعال کردن'}}</button></form></div>'''
+    b='''<div class="card"><h2>📢 عضویت اجباری</h2><p class="muted">کاربر باید در همه کانال‌های فعال عضو باشد.</p><form method="post"><label>ID یا @username</label><input name="channel_id" placeholder="@mychannel یا -100123..." required><label>عنوان</label><input name="title" placeholder="کانال اصلی"><label>لینک عضویت</label><input name="link" placeholder="https://t.me/mychannel" required><button>➕ افزودن کانال</button></form></div><div class="card"><div class="row" style="justify-content:space-between"><h3>کانال‌های فعلی</h3><span class="badge {{'ok' if enabled else 'bad'}}">{{'فعال' if enabled else 'خاموش'}}</span></div>{% if channels %}<div class="table-wrap"><table class="table"><tr><th>#</th><th>عنوان</th><th>ID</th><th>لینک</th><th></th></tr>{% for c in channels %}<tr><td>{{loop.index}}</td><td>{{c.title}}</td><td>{{c.id}}</td><td class="small">{{c.link}}</td><td><a class="btn blue" href="{{url_for('mandatory_edit_web')}}?id={{c.id}}">✏️ ویرایش</a><form method="post" action="{{url_for('mandatory_delete_web')}}"><input type="hidden" name="id" value="{{c.id}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div>{% else %}<div class="empty">هنوز کانالی ثبت نشده.</div>{% endif %}<form method="post" action="{{url_for('mandatory_toggle_web')}}"><button class="btn dark">{{'🔴 خاموش کردن' if enabled else '🟢 فعال کردن'}}</button></form></div>'''
     return page(b,channels=cs,enabled=setting('mandatory_enabled')=='1')
+
+@app.route('/mandatory/edit',methods=['GET','POST'])
+@admin_required
+def mandatory_edit_web():
+    cid=request.args.get('id','').strip() if request.method=='GET' else request.form.get('original_id','').strip()
+    raw=setting('mandatory_channels')
+    try: cs=json.loads(raw) if raw else []
+    except Exception: cs=[]
+    current=next((c for c in cs if str(c.get('id'))==cid),None)
+    if not current:
+        flash('❌ کانال پیدا نشد.'); return redirect(url_for('mandatory'))
+    if request.method=='POST':
+        new_id=request.form.get('channel_id','').strip(); title=request.form.get('title','').strip() or new_id; link=request.form.get('link','').strip()
+        if not new_id or not link:
+            flash('❌ اطلاعات کانال ناقص است.'); return redirect(url_for('mandatory_edit_web',id=cid))
+        cs=[c for c in cs if str(c.get('id')) not in (cid,new_id)]
+        cs.append({'id':new_id,'title':title,'link':link})
+        set_setting('mandatory_channels',json.dumps(cs,ensure_ascii=False)); set_setting('mandatory_enabled','1'); flash('✅ کانال ویرایش شد.')
+        return redirect(url_for('mandatory'))
+    b='''<div class='card'><h2>✏️ ویرایش کانال</h2><form method='post'><input type='hidden' name='original_id' value='{{c.id}}'><label>ID یا @username</label><input name='channel_id' value='{{c.id}}' required><label>عنوان</label><input name='title' value='{{c.title}}'><label>لینک عضویت</label><input name='link' value='{{c.link}}' required><button>💾 ذخیره تغییرات</button> <a class='btn dark' href='{{url_for('mandatory')}}'>لغو</a></form></div>'''
+    return page(b,c=current)
 
 @app.route('/mandatory/delete',methods=['POST'])
 @admin_required
@@ -396,8 +417,30 @@ def panels():
         with db() as c: c.execute('INSERT INTO panels(panel_type,name,address,username,password,status) VALUES(?,?,?,?,?,?)',(pt,name,clean_base_url(address),user,pw,'manual'))
         flash('✅ پنل اضافه شد. حالا می‌توانی تست اتصال بگیری.'); return redirect(url_for('panels'))
     with db() as c: rows=c.execute('SELECT id,panel_type,name,address,status FROM panels ORDER BY id DESC').fetchall()
-    b='''<div class="card"><h2>➕ افزودن پنل</h2><form method="post"><div class="grid"><div><label>نوع پنل</label><select name="panel_type"><option value="pasarguard">Pasarguard</option><option value="marzban">Marzban</option><option value="3xui">3x-ui</option></select></div><div><label>نام پنل</label><input name="name" placeholder="مثلاً PG اصلی" required></div></div><label>آدرس</label><input name="address" placeholder="https://panel.example.com:2096" required><div class="grid"><div><label>Username</label><input name="username" required></div><div><label>Password</label><input name="password" type="password" required></div></div><button>➕ ثبت پنل</button></form></div><div class="card"><h2>🖥 پنل‌ها</h2>{% if rows %}<div class="grid">{% for r in rows %}<div class="statcard"><div class="row" style="justify-content:space-between"><b>{{r[2]}}</b><span class="badge {{'ok' if r[4]=='connected' else 'warn' if r[4]=='manual' else 'bad'}}">{{r[4]}}</span></div><p class="muted small">#{{r[0]}} · {{r[1]}}</p><p class="mini">{{r[3]}}</p><div class="actions"><a class="btn blue" href="{{url_for('panel_test_web',pid=r[0])}}">🧪 تست اتصال</a>{% if r[1]=='pasarguard' %}<a class="btn dark" href="{{url_for('panel_groups_web',pid=r[0])}}">🔗 Groupها</a><a class="btn dark" href="{{url_for('free_test_settings_web',pid=r[0])}}">🎁 تنظیم تست</a>{% endif %}<form method="post" action="{{url_for('panel_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></div></div>{% endfor %}</div>{% else %}<div class="empty">هنوز پنلی ثبت نشده.</div>{% endif %}</div>'''
+    b='''<div class="card"><h2>➕ افزودن پنل</h2><form method="post"><div class="grid"><div><label>نوع پنل</label><select name="panel_type"><option value="pasarguard">Pasarguard</option><option value="marzban">Marzban</option><option value="3xui">3x-ui</option></select></div><div><label>نام پنل</label><input name="name" placeholder="مثلاً PG اصلی" required></div></div><label>آدرس</label><input name="address" placeholder="https://panel.example.com:2096" required><div class="grid"><div><label>Username</label><input name="username" required></div><div><label>Password</label><input name="password" type="password" required></div></div><button>➕ ثبت پنل</button></form></div><div class="card"><h2>🖥 پنل‌ها</h2>{% if rows %}<div class="grid">{% for r in rows %}<div class="statcard"><div class="row" style="justify-content:space-between"><b>{{r[2]}}</b><span class="badge {{'ok' if r[4]=='connected' else 'warn' if r[4]=='manual' else 'bad'}}">{{r[4]}}</span></div><p class="muted small">#{{r[0]}} · {{r[1]}}</p><p class="mini">{{r[3]}}</p><div class="actions"><a class="btn blue" href="{{url_for('panel_edit_web',pid=r[0])}}">✏️ ویرایش</a><a class="btn blue" href="{{url_for('panel_test_web',pid=r[0])}}">🧪 تست اتصال</a>{% if r[1]=='pasarguard' %}<a class="btn dark" href="{{url_for('panel_groups_web',pid=r[0])}}">🔗 Groupها</a><a class="btn dark" href="{{url_for('free_test_settings_web',pid=r[0])}}">🎁 تنظیم تست</a>{% endif %}<form method="post" action="{{url_for('panel_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></div></div>{% endfor %}</div>{% else %}<div class="empty">هنوز پنلی ثبت نشده.</div>{% endif %}</div>'''
     return page(b,rows=rows)
+
+@app.route('/panels/edit/<int:pid>',methods=['GET','POST'])
+@admin_required
+def panel_edit_web(pid):
+    with db() as c: row=c.execute('SELECT panel_type,name,address,username,password FROM panels WHERE id=?',(pid,)).fetchone()
+    if not row: flash('❌ پنل پیدا نشد.'); return redirect(url_for('panels'))
+    if request.method=='POST':
+        pt=request.form.get('panel_type','').strip(); name=request.form.get('name','').strip(); address=request.form.get('address','').strip(); user=request.form.get('username','').strip(); pw=request.form.get('password','').strip()
+        if pt not in PANEL_TYPES or not all((name,address,user,pw)):
+            flash('❌ اطلاعات پنل ناقص است.'); return redirect(url_for('panel_edit_web',pid=pid))
+        ok,reason,_,_,client=panel_login_sync(pt,address,user,pw)
+        if client: client.close()
+        if not ok:
+            flash('❌ تست اتصال ناموفق: '+reason); return redirect(url_for('panel_edit_web',pid=pid))
+        with db() as c:
+            c.execute('UPDATE panels SET panel_type=?,name=?,address=?,username=?,password=?,status=? WHERE id=?',(pt,name,clean_base_url(address),user,pw,'connected',pid))
+            if pt!='pasarguard':
+                c.execute('DELETE FROM free_test_settings WHERE panel_id=?',(pid,))
+                c.execute('DELETE FROM panel_groups WHERE panel_id=?',(pid,))
+        flash('✅ پنل ویرایش شد و اتصال جدید با موفقیت تست شد.'); return redirect(url_for('panels'))
+    b='''<div class='card'><h2>✏️ ویرایش پنل #{{pid}}</h2><form method='post'><label>نوع پنل</label><select name='panel_type'>{% for k,v in types.items() %}<option value='{{k}}' {% if k==row[0] %}selected{% endif %}>{{v}}</option>{% endfor %}</select><label>نام پنل</label><input name='name' value='{{row[1]}}' required><label>آدرس</label><input name='address' value='{{row[2]}}' required><div class='grid'><div><label>Username</label><input name='username' value='{{row[3]}}' required></div><div><label>Password</label><input name='password' value='{{row[4]}}' type='password' required></div></div><button>💾 ذخیره و تست اتصال</button> <a class='btn dark' href='{{url_for('panels')}}'>لغو</a></form></div>'''
+    return page(b,pid=pid,row=row,types=PANEL_TYPES)
 
 @app.route('/panels/test/<int:pid>')
 @admin_required
@@ -484,8 +527,25 @@ def products():
         flash('✅ محصول اضافه شد.'); return redirect(url_for('products'))
     with db() as c:
         ps=c.execute('SELECT id,name,panel_type FROM panels ORDER BY id DESC').fetchall(); rows=c.execute('SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,pa.name,p.active FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id ORDER BY p.id DESC').fetchall()
-    b='''<div class="card"><h2>➕ افزودن محصول</h2><form method="post"><div class="grid"><input name="name" placeholder="نام محصول" required><input name="price" placeholder="قیمت تومان" required><select name="panel_id" required><option value="">انتخاب پنل</option>{% for p in ps %}<option value="{{p[0]}}">#{{p[0]}} {{p[1]}} ({{p[2]}})</option>{% endfor %}</select><input name="gb" type="number" min="1" placeholder="حجم GB" required><input name="days" type="number" min="1" placeholder="مدت روز" required></div><button>➕ ثبت محصول</button></form></div><div class="card"><h2>📋 محصولات</h2><div class="table-wrap"><table class="table"><tr><th>ID</th><th>نام</th><th>قیمت</th><th>حجم</th><th>مدت</th><th>پنل</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td>{{r[3]}}GB</td><td>{{r[4]}} روز</td><td>{{r[5] or '-'}}</td><td>{{'فعال' if r[6] else 'غیرفعال'}}</td><td><form method="post" action="{{url_for('product_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div></div>'''
+    b='''<div class="card"><h2>➕ افزودن محصول</h2><form method="post"><div class="grid"><input name="name" placeholder="نام محصول" required><input name="price" placeholder="قیمت تومان" required><select name="panel_id" required><option value="">انتخاب پنل</option>{% for p in ps %}<option value="{{p[0]}}">#{{p[0]}} {{p[1]}} ({{p[2]}})</option>{% endfor %}</select><input name="gb" type="number" min="1" placeholder="حجم GB" required><input name="days" type="number" min="1" placeholder="مدت روز" required></div><button>➕ ثبت محصول</button></form></div><div class="card"><h2>📋 محصولات</h2><div class="table-wrap"><table class="table"><tr><th>ID</th><th>نام</th><th>قیمت</th><th>حجم</th><th>مدت</th><th>پنل</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td>{{r[3]}}GB</td><td>{{r[4]}} روز</td><td>{{r[5] or '-'}}</td><td>{{'فعال' if r[6] else 'غیرفعال'}}</td><td><a class="btn blue" href="{{url_for('product_edit_web',pid=r[0])}}">✏️ ویرایش</a><form method="post" action="{{url_for('product_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div></div>'''
     return page(b,ps=ps,rows=rows)
+
+@app.route('/products/edit/<int:pid>',methods=['GET','POST'])
+@admin_required
+def product_edit_web(pid):
+    with db() as c:
+        row=c.execute('SELECT id,name,price,panel_id,data_limit_gb,expire_days FROM products WHERE id=?',(pid,)).fetchone()
+        ps=c.execute('SELECT id,panel_type,name FROM panels ORDER BY id DESC').fetchall()
+    if not row: flash('❌ محصول پیدا نشد.'); return redirect(url_for('products'))
+    if request.method=='POST':
+        name=request.form.get('name','').strip()
+        try: price=int(request.form.get('price','0').replace(',','').replace('٬','')); gb=int(request.form.get('gb','1')); days=int(request.form.get('days','1')); panel_id=int(request.form.get('panel_id','0'))
+        except Exception: flash('❌ مقادیر عددی صحیح نیست.'); return redirect(url_for('product_edit_web',pid=pid))
+        if not name or min(price,gb,days,panel_id)<=0: flash('❌ اطلاعات محصول ناقص است.'); return redirect(url_for('product_edit_web',pid=pid))
+        with db() as c: c.execute('UPDATE products SET name=?,price=?,panel_id=?,data_limit_gb=?,expire_days=? WHERE id=?',(name,f'{price:,} تومان',panel_id,gb,days,pid))
+        flash('✅ محصول ویرایش شد.'); return redirect(url_for('products'))
+    b='''<div class='card'><h2>✏️ ویرایش محصول #{{pid}}</h2><form method='post'><label>نام محصول</label><input name='name' value='{{row[1]}}' required><label>قیمت تومان</label><input name='price' value="{{row[2]|replace(' تومان','')|replace(',','')}}" required><div class='grid'><div><label>پنل</label><select name='panel_id' required>{% for p in ps %}<option value='{{p[0]}}' {% if p[0]==row[3] %}selected{% endif %}>#{{p[0]}} {{p[2]}} ({{p[1]}})</option>{% endfor %}</select></div><div><label>حجم GB</label><input name='gb' type='number' min='1' value='{{row[4] or 1}}' required></div><div><label>مدت روز</label><input name='days' type='number' min='1' value='{{row[5] or 1}}' required></div></div><button>💾 ذخیره تغییرات</button> <a class='btn dark' href='{{url_for('products')}}'>لغو</a></form></div>'''
+    return page(b,pid=pid,row=row,ps=ps)
 
 @app.route('/products/delete',methods=['POST'])
 @admin_required
@@ -624,8 +684,29 @@ def discount():
     with db() as c: rows=c.execute('SELECT id,code,discount_type,value,duration_days,created_at,expires_at,active FROM coupons ORDER BY id DESC').fetchall()
     b="""<div class='hero'><h2>🏷 کدهای تخفیف</h2><p>کدهای تخفیف فقط از سمت مدیریت ساخته می‌شوند و در منوی اصلی کاربر نمایش داده نمی‌شوند؛ کاربر هنگام ثبت سفارش می‌تواند کد را وارد کند.</p></div>
     <div class='card'><h3>➕ افزودن کد تخفیف</h3><form method='post'><label>اسم / کد تخفیف</label><input name='code' placeholder='مثلاً OFF20' required maxlength='40'><label>نوع تخفیف</label><select name='discount_type'><option value='percent'>٪ درصدی</option><option value='amount'>💰 مبلغی (تومان)</option></select><label>درصد یا مبلغ تخفیف</label><input name='value' type='number' min='1' placeholder='مثلاً 20 یا 50000' required><label>مدت اعتبار</label><input name='duration_days' type='number' min='1' placeholder='مثلاً 30' required><p class='muted small'>هر 1 عدد = 1 روز</p><button>➕ ساخت کد تخفیف</button></form></div>
-    <div class='card'><h3>📋 کدهای ثبت‌شده</h3>{% if rows %}<div class='table-wrap'><table class='table'><tr><th>نام / کد</th><th>نوع</th><th>مقدار</th><th>مدت</th><th>تاریخ ساخت</th><th>انقضا</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td><b>{{r[1]}}</b></td><td>{{'درصدی' if r[2]=='percent' else 'مبلغی'}}</td><td>{{r[3]}}{% if r[2]=='percent' %}٪{% else %} تومان{% endif %}</td><td>{{r[4]}} روز</td><td>{{r[5]}}</td><td>{{r[6]}}</td><td><span class='badge {{'ok' if r[7] and r[6]>now else 'bad'}}'>{{'🟢 فعال' if r[7] and r[6]>now else '🔴 منقضی/غیرفعال'}}</span></td><td><form method='post' action='{{url_for('discount_delete_web')}}'><input type='hidden' name='id' value='{{r[0]}}'><button class='danger'>🗑 حذف</button></form></td></tr>{% endfor %}</table></div>{% else %}<div class='empty'>هنوز کد تخفیفی ساخته نشده.</div>{% endif %}</div>"""
+    <div class='card'><h3>📋 کدهای ثبت‌شده</h3>{% if rows %}<div class='table-wrap'><table class='table'><tr><th>نام / کد</th><th>نوع</th><th>مقدار</th><th>مدت</th><th>تاریخ ساخت</th><th>انقضا</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td><b>{{r[1]}}</b></td><td>{{'درصدی' if r[2]=='percent' else 'مبلغی'}}</td><td>{{r[3]}}{% if r[2]=='percent' %}٪{% else %} تومان{% endif %}</td><td>{{r[4]}} روز</td><td>{{r[5]}}</td><td>{{r[6]}}</td><td><span class='badge {{'ok' if r[7] and r[6]>now else 'bad'}}'>{{'🟢 فعال' if r[7] and r[6]>now else '🔴 منقضی/غیرفعال'}}</span></td><td><a class='btn blue' href='{{url_for('discount_edit_web',rid=r[0])}}'>✏️ ویرایش</a><form method='post' action='{{url_for('discount_delete_web')}}'><input type='hidden' name='id' value='{{r[0]}}'><button class='danger'>🗑 حذف</button></form></td></tr>{% endfor %}</table></div>{% else %}<div class='empty'>هنوز کد تخفیفی ساخته نشده.</div>{% endif %}</div>"""
     return page(b,rows=rows,now=now)
+
+@app.route('/discount/edit/<int:rid>',methods=['GET','POST'])
+@admin_required
+def discount_edit_web(rid):
+    with db() as c: row=c.execute('SELECT id,code,discount_type,value,duration_days FROM coupons WHERE id=?',(rid,)).fetchone()
+    if not row: flash('❌ کد تخفیف پیدا نشد.'); return redirect(url_for('discount'))
+    if request.method=='POST':
+        code=re.sub(r'\s+','',request.form.get('code','')).upper(); dtype=request.form.get('discount_type','percent')
+        try: value=int(request.form.get('value','0') or 0); days=int(request.form.get('duration_days','0') or 0)
+        except Exception: value=days=0
+        if not re.fullmatch(r'[A-Z0-9_-]{2,40}',code): flash('❌ کد نامعتبر است.')
+        elif dtype not in ('percent','amount') or value<=0 or (dtype=='percent' and value>100): flash('❌ مقدار تخفیف نامعتبر است.')
+        elif days<=0: flash('❌ مدت اعتبار باید مثبت باشد.')
+        else:
+            expires=(datetime.utcnow()+timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+            try:
+                with db() as c: c.execute('UPDATE coupons SET code=?,discount_type=?,value=?,duration_days=?,expires_at=?,active=1 WHERE id=?',(code,dtype,value,days,expires,rid))
+                flash('✅ کد تخفیف ویرایش شد.'); return redirect(url_for('discount'))
+            except sqlite3.IntegrityError: flash('❌ این کد قبلاً ثبت شده است.')
+    b='''<div class='card'><h2>✏️ ویرایش کد تخفیف #{{row[0]}}</h2><form method='post'><label>نام / کد</label><input name='code' value='{{row[1]}}' required><label>نوع</label><select name='discount_type'><option value='percent' {% if row[2]=='percent' %}selected{% endif %}>٪ درصدی</option><option value='amount' {% if row[2]=='amount' %}selected{% endif %}>💰 مبلغی</option></select><label>مقدار</label><input name='value' type='number' min='1' value='{{row[3]}}' required><label>مدت اعتبار (روز)</label><input name='duration_days' type='number' min='1' value='{{row[4]}}' required><button>💾 ذخیره تغییرات</button> <a class='btn dark' href='{{url_for('discount')}}'>لغو</a></form></div>'''
+    return page(b,row=row)
 
 @app.route('/discount/delete',methods=['POST'])
 @admin_required

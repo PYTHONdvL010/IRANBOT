@@ -465,11 +465,26 @@ async def discount_type_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     prompt="٪ چند درصد تخفیف؟\nمثال: 20\nحداکثر 100 درصد." if dtype=="percent" else "💰 چقدر از مبلغ کم شود؟\nبه تومان فقط عدد وارد کن.\nمثال: 50000"
     await q.edit_message_text(prompt,reply_markup=cancel_keyboard())
 
+async def discount_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    rid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT code,discount_type,value,duration_days FROM coupons WHERE id=?",(rid,)).fetchone()
+    if not row:
+        await q.edit_message_text("❌ کد پیدا نشد.",reply_markup=admin_menu()); return
+    context.user_data["flow"]={"type":"discount_edit","step":"value","coupon_id":rid,"discount_type":row[1],"old_code":row[0]}
+    prompt=(f"✏️ ویرایش کد {row[0]}\n\nدرصد جدید را بفرست. مقدار فعلی: {row[2]}٪" if row[1]=="percent" else f"✏️ ویرایش کد {row[0]}\n\nمبلغ جدید را به تومان بفرست. مقدار فعلی: {row[2]:,} تومان")
+    await q.edit_message_text(prompt,reply_markup=cancel_keyboard())
+
+
 async def discount_delete_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
     with conn() as c: rows=c.execute("SELECT id,code FROM coupons ORDER BY id DESC LIMIT 50").fetchall()
-    buttons=[[InlineKeyboardButton(f"🗑 {code}",callback_data=f"discount_delete:{rid}")] for rid,code in rows]; buttons.append([InlineKeyboardButton("↩️ بازگشت",callback_data="admin_discounts")])
+    buttons=[]
+    for rid,code in rows:
+        buttons.append([InlineKeyboardButton(f"✏️ ویرایش {code}",callback_data=f"discount_edit:{rid}"),InlineKeyboardButton("🗑 حذف",callback_data=f"discount_delete:{rid}")])
+    buttons.append([InlineKeyboardButton("↩️ بازگشت",callback_data="admin_discounts")])
     await q.edit_message_text("کدی که می‌خواهی حذف شود را انتخاب کن:",reply_markup=InlineKeyboardMarkup(buttons))
 
 async def discount_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -677,7 +692,7 @@ async def admin_mandatory(update:Update,context:ContextTypes.DEFAULT_TYPE):
         for i,ch in enumerate(channels,1): lines.append(f"{i}. {ch.get('title') or 'بدون عنوان'} — {ch.get('id')}")
     else: lines.append("هنوز کانالی ثبت نشده.")
     buttons=[[InlineKeyboardButton("➕ افزودن کانال",callback_data="mandatory_add")]]
-    for i,ch in enumerate(channels): buttons.append([InlineKeyboardButton(f"🗑 حذف {ch.get('title') or ch.get('id')}",callback_data=f"mandatory_del:{i}")])
+    for i,ch in enumerate(channels): buttons.append([InlineKeyboardButton(f"✏️ ویرایش {ch.get('title') or ch.get('id')}",callback_data=f"mandatory_edit:{i}"),InlineKeyboardButton("🗑 حذف",callback_data=f"mandatory_del:{i}")])
     buttons.append([InlineKeyboardButton("🔛 فعال" if get_setting_sync("mandatory_enabled")=="1" else "🔴 خاموش",callback_data="mandatory_toggle")])
     buttons.append([InlineKeyboardButton("↩️ بازگشت",callback_data="admin")])
     await q.edit_message_text("\n".join(lines)+"\n\nاول ربات را با دسترسی‌های لازم ادمین همه کانال‌ها کن.",reply_markup=InlineKeyboardMarkup(buttons))
@@ -687,6 +702,19 @@ async def mandatory_add_start(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not is_admin(q.from_user.id): return
     context.user_data["flow"]={"type":"mandatory_admin","step":"channel_id"}
     await q.edit_message_text("➕ افزودن کانال عضویت اجباری\n\nاول ربات را با دسترسی‌های لازم ادمین کانال کن، سپس ID عددی یا @username کانال را بفرست.",reply_markup=cancel_keyboard())
+
+async def mandatory_edit_start(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    try: idx=int(q.data.split(":")[1])
+    except Exception: return
+    channels=get_mandatory_channels()
+    if not (0<=idx<len(channels)):
+        await q.edit_message_text("❌ کانال پیدا نشد.",reply_markup=admin_menu()); return
+    ch=channels[idx]
+    context.user_data["flow"]={"type":"mandatory_edit","step":"channel_id","index":idx,"old_id":str(ch.get("id"))}
+    await q.edit_message_text(f"✏️ ویرایش کانال\n\nID فعلی: {ch.get('id')}\nعنوان فعلی: {ch.get('title') or '-'}\n\nID یا @username جدید را بفرست.",reply_markup=cancel_keyboard())
+
 
 async def mandatory_delete(update:Update,context:ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -763,10 +791,35 @@ async def admin_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows=c.execute("SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل') FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id ORDER BY p.id DESC").fetchall()
     buttons=[]
     for i,n,pr,gb,days,pn in rows:
-        buttons.append([InlineKeyboardButton(f"🗑 حذف #{i} {n}"[:60],callback_data=f"delete_product:{i}")])
+        buttons.append([InlineKeyboardButton(f"✏️ ویرایش #{i} {n}"[:55],callback_data=f"edit_product:{i}"), InlineKeyboardButton("🗑 حذف",callback_data=f"delete_product:{i}")])
     buttons.append([InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")])
     text="📋 محصولات\n\n"+("\n".join(f"#{i} — {n}\n💰 {pr}\n📦 {gb or 1} GB | ⏳ {days or 1} روز\n🖥 {pn}" for i,n,pr,gb,days,pn in rows) if rows else "هنوز محصولی ثبت نشده.")
     await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
+
+async def edit_product_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    pid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT id,name,price,panel_id,data_limit_gb,expire_days FROM products WHERE id=?",(pid,)).fetchone()
+    if not row:
+        await q.edit_message_text("❌ محصول پیدا نشد.",reply_markup=admin_menu()); return
+    context.user_data["flow"]={"type":"product_edit","step":"name","product_id":pid,"panel_id":row[3]}
+    await q.edit_message_text(f"✏️ ویرایش محصول #{pid}\n\nنام جدید را بفرست.\nنام فعلی: {row[1]}",reply_markup=cancel_keyboard())
+
+
+async def edit_product_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    flow=context.user_data.get("flow",{})
+    if flow.get("type")!="product_edit":
+        await q.edit_message_text("❌ فرآیند ویرایش منقضی شده است.",reply_markup=admin_menu()); return
+    pid=int(q.data.split(":")[1])
+    with conn() as c: p=c.execute("SELECT id,name FROM panels WHERE id=?",(pid,)).fetchone()
+    if not p:
+        await q.answer("پنل پیدا نشد.",show_alert=True); return
+    flow["panel_id"]=pid; flow["step"]="gb"
+    await q.edit_message_text(f"🖥 پنل جدید: {p[1]}\n\n📦 حجم جدید را فقط به عدد بفرست.",reply_markup=cancel_keyboard())
+
 
 async def delete_product(update,context):
     q=update.callback_query; await q.answer()
@@ -965,11 +1018,36 @@ async def panel_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("🎁 تنظیم تست رایگان کاربران", callback_data=f"free_test_settings:{pid}")])
         buttons.append([InlineKeyboardButton("🔄 بروزرسانی Groupها", callback_data=f"refresh_groups:{pid}")])
     buttons += [
+        [InlineKeyboardButton("✏️ ویرایش پنل", callback_data=f"edit_panel:{pid}")],
         [InlineKeyboardButton("🧪 تست API Pasarguard" if pt == "pasarguard" else "🧪 تست اتصال", callback_data=f"test_panel:{pid}")],
         [InlineKeyboardButton("🗑 حذف پنل", callback_data=f"delete_panel:{pid}")],
         [InlineKeyboardButton("↩️ پنل‌ها", callback_data="admin_panels")]
     ]
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def edit_panel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    pid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT panel_type,name,address,username FROM panels WHERE id=?",(pid,)).fetchone()
+    if not row:
+        await q.edit_message_text("❌ پنل پیدا نشد.",reply_markup=admin_menu()); return
+    pt,name,address,username=row
+    context.user_data["flow"]={"type":"panel_edit","step":"type","panel_id":pid,"panel_type":pt}
+    await q.edit_message_text(f"✏️ ویرایش پنل #{pid}\n\nنوع فعلی: {PANEL_TYPES.get(pt,pt)}\nنوع جدید را انتخاب کن:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Marzban",callback_data=f"edit_panel_type:{pid}:marzban")],[InlineKeyboardButton("Pasarguard",callback_data=f"edit_panel_type:{pid}:pasarguard")],[InlineKeyboardButton("3x-ui",callback_data=f"edit_panel_type:{pid}:3xui")],[InlineKeyboardButton("❌ لغو",callback_data=f"panel_detail:{pid}")]]))
+
+
+async def edit_panel_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    _,pid,pt=q.data.split(":",2); pid=int(pid)
+    flow=context.user_data.get("flow",{})
+    if flow.get("type")!="panel_edit" or int(flow.get("panel_id",0))!=pid:
+        await q.edit_message_text("❌ فرآیند ویرایش منقضی شده است.",reply_markup=admin_menu()); return
+    flow["panel_type"]=pt; flow["step"]="name"
+    with conn() as c: row=c.execute("SELECT name FROM panels WHERE id=?",(pid,)).fetchone()
+    await q.edit_message_text(f"نام جدید پنل را بفرست.\nنام فعلی: {row[0] if row else '-'}",reply_markup=cancel_keyboard())
 
 
 async def delete_group(update, context):
@@ -1508,6 +1586,26 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('welcome_message',?)",(text,))
         context.user_data.pop("flow",None)
         await update.message.reply_text("✅ پیام خوش‌آمد ذخیره شد.",reply_markup=admin_menu()); return
+    if flow["type"]=="mandatory_edit":
+        if flow.get("step")=="channel_id":
+            channel=text.strip()
+            try:
+                chat=await context.bot.get_chat(channel)
+                me=await context.bot.get_chat_member(chat_id=chat.id,user_id=context.bot.id)
+                if me.status not in ("administrator","creator"):
+                    await update.message.reply_text("❌ ربات ادمین این کانال نیست.",reply_markup=cancel_keyboard()); return
+                flow["channel_id"]=str(chat.id); flow["title"]=chat.title or channel; flow["step"]="link"
+                await update.message.reply_text("🔗 لینک عضویت جدید را بفرست.")
+                return
+            except Exception as e:
+                await update.message.reply_text(f"❌ کانال پیدا نشد یا دسترسی ربات کافی نیست.\n\n{str(e)[:300]}",reply_markup=cancel_keyboard()); return
+        if flow.get("step")=="link":
+            link=text.strip()
+            if not (link.startswith("http://") or link.startswith("https://")):
+                await update.message.reply_text("❌ لینک معتبر نیست."); return
+            channels=get_mandatory_channels(); idx=int(flow["index"])
+            if 0<=idx<len(channels): channels[idx]={"id":flow["channel_id"],"title":flow["title"],"link":link}; save_mandatory_channels(channels)
+            context.user_data.pop("flow",None); await update.message.reply_text("✅ کانال عضویت اجباری ویرایش شد.",reply_markup=admin_menu()); return
     if flow["type"]=="mandatory_admin":
         if flow.get("step")=="channel_id":
             channel=text.strip()
@@ -1532,6 +1630,25 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_enabled','1')")
             context.user_data.pop("flow",None)
             await update.message.reply_text(f"✅ عضویت اجباری برای {flow['title']} فعال شد.\n\nتعداد کانال‌های اجباری: {len(channels)}",reply_markup=admin_menu()); return
+    if flow["type"]=="discount_edit":
+        step=flow.get("step")
+        if step=="value":
+            digits=text.replace(",","").replace("٬","").replace("تومان","").strip()
+            if not digits.isdigit() or int(digits)<=0 or (flow["discount_type"]=="percent" and int(digits)>100):
+                await update.message.reply_text("❌ مقدار تخفیف نامعتبر است."); return
+            flow["value"]=int(digits); flow["step"]="days"; await update.message.reply_text("⏳ مدت اعتبار جدید را به روز بفرست. هر 1 عدد = 1 روز."); return
+        if step=="days":
+            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ زمان باید عدد مثبت باشد."); return
+            flow["duration_days"]=int(text); flow["step"]="code"; await update.message.reply_text(f"🏷 کد جدید را بفرست. کد فعلی: {flow['old_code']}"); return
+        if step=="code":
+            code=re.sub(r"\s+","",text).upper()
+            if not re.fullmatch(r"[A-Z0-9_-]{2,40}",code): await update.message.reply_text("❌ کد فقط شامل حروف انگلیسی، عدد، _ و - باشد."); return
+            expires=(datetime.utcnow()+timedelta(days=flow["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                with conn() as c: c.execute("UPDATE coupons SET code=?,discount_type=?,value=?,duration_days=?,expires_at=?,active=1 WHERE id=?",(code,flow["discount_type"],flow["value"],flow["duration_days"],expires,flow["coupon_id"]))
+            except sqlite3.IntegrityError:
+                await update.message.reply_text("❌ این کد قبلاً ثبت شده. یک کد دیگر وارد کن."); return
+            context.user_data.pop("flow",None); await update.message.reply_text(f"✅ کد {code} ویرایش شد.",reply_markup=admin_menu()); return
     if flow["type"]=="discount_admin":
         step=flow.get("step")
         if step=="value":
@@ -1551,6 +1668,24 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except sqlite3.IntegrityError: await update.message.reply_text("❌ این کد قبلاً ثبت شده. یک کد دیگر وارد کن."); return
             kind="درصدی" if flow["discount_type"]=="percent" else "مبلغی"; amount=f"{flow['value']}٪" if flow["discount_type"]=="percent" else f"{flow['value']:,} تومان"
             context.user_data.pop("flow",None); await update.message.reply_text(f"✅ کد تخفیف ساخته و ثبت شد.\n\n🏷 کد: {code}\nنوع: {kind}\nمقدار: {amount}\n⏳ اعتبار: {flow['duration_days']} روز\n📅 انقضا: {expires}",reply_markup=admin_menu()); return
+    if flow["type"]=="product_edit":
+        if flow["step"]=="name":
+            if not text: await update.message.reply_text("❌ نام نمی‌تواند خالی باشد."); return
+            flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت جدید را به تومان بفرست."); return
+        if flow["step"]=="price":
+            digits=text.replace(",","").replace("٬","").replace("تومان","").strip()
+            if not digits.isdigit() or int(digits)<=0: await update.message.reply_text("❌ قیمت باید عدد مثبت باشد."); return
+            flow["price"]=f"{int(digits):,} تومان"; flow["step"]="panel"
+            with conn() as c: panels=c.execute("SELECT id,panel_type,name,status FROM panels ORDER BY id DESC").fetchall()
+            await update.message.reply_text("🖥 پنل جدید را انتخاب کن:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"#{i} {name} ({PANEL_TYPES.get(pt,pt)})",callback_data=f"edit_product_panel:{i}")] for i,pt,name,status in panels]+[[InlineKeyboardButton("❌ لغو",callback_data="admin")]])); return
+        if flow["step"]=="gb":
+            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ حجم باید عدد مثبت باشد."); return
+            flow["data_limit_gb"]=int(text); flow["step"]="days"; await update.message.reply_text("⏳ مدت جدید را به روز بفرست."); return
+        if flow["step"]=="days":
+            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ مدت باید عدد مثبت باشد."); return
+            flow["expire_days"]=int(text)
+            with conn() as c: c.execute("UPDATE products SET name=?,price=?,panel_id=?,data_limit_gb=?,expire_days=? WHERE id=?",(flow["name"],flow["price"],flow["panel_id"],flow["data_limit_gb"],flow["expire_days"],flow["product_id"]))
+            context.user_data.pop("flow",None); await update.message.reply_text(f"✅ محصول #{flow['product_id']} ویرایش شد.",reply_markup=admin_menu()); return
     if flow["type"]=="product":
         if flow["step"]=="name":
             flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
@@ -1579,6 +1714,26 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         flow["expire_days"]=int(text)
         with conn() as c: pid=c.execute("INSERT INTO products(name,price,panel_id,data_limit_gb,expire_days) VALUES(?,?,?,?,?)",(flow["name"],flow["price"],flow["panel_id"],flow["data_limit_gb"],flow["expire_days"])).lastrowid
         context.user_data.pop("flow",None); await update.message.reply_text(f"✅ محصول #{pid} اضافه شد.\n\nنام: {flow['name']}\nقیمت: {flow['price']}\n🖥 پنل: #{flow['panel_id']}\n📦 حجم: {flow['data_limit_gb']} GB\n⏳ زمان: {flow['expire_days']} روز",reply_markup=admin_menu()); return
+    if flow["type"]=="panel_edit":
+        if flow["step"]=="name":
+            if not text: await update.message.reply_text("❌ نام نمی‌تواند خالی باشد."); return
+            flow["name"]=text; flow["step"]="address"; await update.message.reply_text("🌐 آدرس جدید پنل را بفرست."); return
+        if flow["step"]=="address":
+            if not valid_url(text): await update.message.reply_text("❌ آدرس معتبر نیست."); return
+            flow["address"]=clean_base_url(text); flow["step"]="username"; await update.message.reply_text("👤 username جدید را بفرست."); return
+        if flow["step"]=="username":
+            flow["username"]=text; flow["step"]="password"; await update.message.reply_text("🔑 password جدید را بفرست."); return
+        if flow["step"]=="password":
+            flow["password"]=text
+            ok,reason,_=await panel_api_login(flow["panel_type"],flow["address"],flow["username"],flow["password"])
+            if not ok:
+                await update.message.reply_text(panel_error_text(reason),reply_markup=cancel_keyboard()); return
+            with conn() as c:
+                c.execute("UPDATE panels SET panel_type=?,name=?,address=?,username=?,password=?,status='connected' WHERE id=?",(flow["panel_type"],flow["name"],clean_base_url(flow["address"]),flow["username"],flow["password"],flow["panel_id"]))
+                if flow.get("panel_type")!="pasarguard":
+                    c.execute("DELETE FROM free_test_settings WHERE panel_id=?",(flow["panel_id"],))
+                    c.execute("DELETE FROM panel_groups WHERE panel_id=?",(flow["panel_id"],))
+            context.user_data.pop("flow",None); await update.message.reply_text(f"✅ پنل #{flow['panel_id']} ویرایش شد و اتصال تست شد.",reply_markup=admin_menu()); return
     if flow["type"]=="panel":
         if flow["step"]=="address":
             if not valid_url(text): await update.message.reply_text("❌ آدرس معتبر نیست. با http:// یا https:// ارسال کن."); return
@@ -2004,6 +2159,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data=="admin_welcome": return await admin_welcome(update,context)
     if data=="admin_mandatory": return await admin_mandatory(update,context)
     if data=="mandatory_add": return await mandatory_add_start(update,context)
+    if data.startswith("mandatory_edit:"): return await mandatory_edit_start(update,context)
     if data.startswith("mandatory_del:"): return await mandatory_delete(update,context)
     if data=="mandatory_toggle": return await mandatory_toggle(update,context)
     if data=="check_membership": return await check_membership(update,context)
@@ -2012,6 +2168,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("paneltype:"): return await select_panel_type(update,context)
     if data.startswith("panel_detail:"): return await panel_detail(update,context)
     if data.startswith("test_panel:"): return await test_panel(update,context)
+    if data.startswith("edit_panel:"): return await edit_panel_start(update,context)
+    if data.startswith("edit_panel_type:"): return await edit_panel_type(update,context)
     if data.startswith("delete_panel:"): return await delete_panel(update,context)
     if data.startswith("delete_group:"): return await delete_group(update,context)
     if data.startswith("connect_group:"): return await connect_group_start(update,context)
@@ -2027,6 +2185,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data=="backup_restore": return await admin_backup_restore_start(update,context)
     if data=="backup_weekly_on": return await backup_weekly_on(update,context)
     if data=="backup_weekly_off": return await backup_weekly_off(update,context)
+    if data.startswith("edit_product:"): return await edit_product_start(update,context)
+    if data.startswith("edit_product_panel:"): return await edit_product_panel(update,context)
     if data.startswith("delete_product:"): return await delete_product(update,context)
     if data=="wallet": return await wallet(update,context)
     if data=="admin_finance": return await admin_finance(update,context)
@@ -2034,6 +2194,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data=="discount_add": return await discount_add_start(update,context)
     if data.startswith("discount_type:"): return await discount_type_start(update,context)
     if data=="discount_delete_list": return await discount_delete_list(update,context)
+    if data.startswith("discount_edit:"): return await discount_edit_start(update,context)
     if data.startswith("discount_delete:"): return await discount_delete(update,context)
     if data=="finance_card": return await finance_card_start(update,context)
     if data=="finance_pending": return await finance_pending(update,context)
