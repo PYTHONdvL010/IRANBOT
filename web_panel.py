@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 import httpx
+from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, redirect, url_for, session, render_template_string, flash, send_file
 
 DB_PATH = os.getenv('DB_PATH', 'shop.db')
@@ -36,6 +37,11 @@ BASE = '''
 <title>IRANBOT — Admin</title>
 <style>
 :root{--bg:#07111f;--panel:#0d1b2d;--panel2:#10233a;--line:#20344d;--text:#edf5ff;--muted:#91a7bf;--accent:#38d996;--accent2:#38a8ff;--danger:#ff5d72;--warn:#ffbd59;--shadow:0 18px 55px rgba(0,0,0,.25)}
+.light-theme{--bg:#f3f6fa;--panel:#ffffff;--panel2:#f8fafc;--line:#d6dee8;--text:#172333;--muted:#5d6d7e;--shadow:0 12px 35px rgba(20,40,60,.12)}
+.light-theme body{background:linear-gradient(135deg,#f7f9fc,#edf2f7);color:var(--text)}
+.light-theme .nav,.light-theme .card,.light-theme .statcard{background:#fff;border-color:var(--line)}
+.light-theme .nav a{background:#f4f7fa;color:#25384c}.light-theme .nav a:hover{background:#e9f0f6}
+.light-theme input,.light-theme textarea,.light-theme select{background:#fff;color:#172333;border-color:#b9c8d7}.light-theme .switch,.light-theme .check{background:#f7f9fb;border-color:#cbd7e3}.light-theme .table th{background:#f1f5f9}.light-theme .logout{background:#f4f7fa;color:#24384d;border-color:#cbd7e3}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% -10%,rgba(56,168,255,.15),transparent 30%),radial-gradient(circle at 5% 10%,rgba(56,217,150,.11),transparent 25%),var(--bg);color:var(--text);font-family:Tahoma,Arial,sans-serif;min-height:100vh}
 .wrap{max-width:1280px;margin:0 auto;padding:24px 18px 45px}.top{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.logo{width:48px;height:48px;border-radius:15px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent2),var(--accent));box-shadow:0 10px 30px rgba(56,168,255,.2);font-size:24px}.brand h1{margin:0;font-size:25px}.version{color:var(--muted);font-size:12px}.logout{color:#dce9f7;text-decoration:none;background:#14263d;border:1px solid var(--line);padding:9px 13px;border-radius:11px}
 .nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;padding:10px;background:rgba(13,27,45,.82);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);backdrop-filter:blur(12px);margin-bottom:20px}.nav a{color:#dbe9f7;text-decoration:none;text-align:center;background:#12243a;border:1px solid transparent;padding:11px 9px;border-radius:12px;transition:.18s}.nav a:hover{border-color:#2d5578;transform:translateY(-1px);background:#172d47}
@@ -45,10 +51,10 @@ BASE = '''
 input,textarea,select{width:100%;box-sizing:border-box;background:#081525;color:#fff;border:1px solid #2a425d;border-radius:12px;padding:12px 13px;margin:7px 0 14px;outline:none}input:focus,textarea:focus,select:focus{border-color:var(--accent2);box-shadow:0 0 0 3px rgba(56,168,255,.08)}label{font-size:13px;color:#b8c9da}button,.btn{display:inline-block;background:linear-gradient(135deg,var(--accent),#23bd86);color:#03130d;border:0;border-radius:11px;padding:11px 15px;font-weight:800;cursor:pointer;text-decoration:none}.btn.blue{background:linear-gradient(135deg,var(--accent2),#4385ff);color:white}.btn.dark{background:#152a42;color:#e6f0fa;border:1px solid #29435e}.danger{background:linear-gradient(135deg,#ff6679,#e83e58)!important;color:#fff!important}.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:separate;border-spacing:0;min-width:720px}.table td,.table th{border-bottom:1px solid #20344d;padding:12px;text-align:right;vertical-align:middle}.table th{color:#9fb5cb;font-size:12px;background:#0d1a2b}.table tr:hover td{background:rgba(255,255,255,.018)}.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#172b43;font-size:12px}.badge.ok{background:rgba(56,217,150,.12);color:#72efb7}.badge.bad{background:rgba(255,93,114,.12);color:#ff9bab}.badge.warn{background:rgba(255,189,89,.12);color:#ffd18a}
 .login{max-width:440px;margin:12vh auto}.login .logo{margin:auto}.flash{background:#11263a;border:1px solid #284763;padding:11px 13px;margin-bottom:10px;border-radius:12px}.empty{text-align:center;padding:35px;color:var(--muted)}.mini{font-size:11px;color:#7890a9;word-break:break-all}.switch{display:flex;align-items:center;justify-content:space-between;padding:14px;background:#0a1829;border:1px solid var(--line);border-radius:13px;margin:10px 0}.checkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}.check{padding:13px;border:1px solid #29425c;border-radius:13px;background:#0a1829}.check input{width:auto;margin:0 7px 0 0}.kpi{font-size:12px;color:var(--muted)}
 @media(max-width:700px){.wrap{padding:14px 10px 30px}.top{align-items:flex-start}.brand h1{font-size:20px}.nav{grid-template-columns:repeat(2,1fr)}.hero{padding:18px}.card{padding:15px}.table{min-width:650px}}
-</style></head><body><div class="wrap">
+</style></head><body class="{{'light-theme' if theme=='light' else ''}}"><div class="wrap">
 <div class="top"><div class="brand"><div class="logo">⚡</div><div><h1>IRANBOT <span class="version">v{{version}}</span></h1><div class="muted small">داشبورد مدیریت فروش و سرویس</div></div></div>{% if session.get('admin_id') %}<a class="logout" href="{{url_for('logout')}}">خروج ↪</a>{% endif %}</div>
 {% if session.get('admin_id') %}<div class="nav">
-<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('finance_report_web')}}">📊 گزارش مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('raffle')}}">🎟 قرعه‌کشی</a><a href="{{url_for('discount')}}">🏷 تخفیف</a><a href="{{url_for('backup')}}">💾 پشتیبان‌گیری</a>
+<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('finance_report_web')}}">📊 گزارش مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('raffle')}}">🎟 قرعه‌کشی</a><a href="{{url_for('discount')}}">🏷 تخفیف</a><a href="{{url_for('backup')}}">💾 پشتیبان‌گیری</a><a href="{{url_for('settings_web')}}">⚙️ تنظیمات</a>
 </div>{% endif %}
 {% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}
 <div class="muted small" style="margin:28px 2px 0">IRANBOT — نسخه {{version}} — ساخته شده توسط PYTHONdvL010</div></div></body></html>
@@ -152,6 +158,10 @@ def ensure_schema():
                 if name not in existing:
                     c.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
         c.execute("UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE last_seen IS NULL OR last_seen=''")
+        c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('web_theme','dark')")
+        c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('web_2fa','0')")
+        if not c.execute("SELECT 1 FROM settings WHERE key='web_admin_id'").fetchone() and ADMIN_IDS:
+            c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('web_admin_id',?)",(str(next(iter(ADMIN_IDS))),))
 
 
 def setting(k):
@@ -165,10 +175,22 @@ def set_setting(k,v):
         c.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',(k,str(v)))
 
 
+def configured_web_admin_id():
+    raw=setting('web_admin_id')
+    try:
+        return int(raw) if raw else (next(iter(ADMIN_IDS)) if ADMIN_IDS else None)
+    except Exception:
+        return next(iter(ADMIN_IDS)) if ADMIN_IDS else None
+
 def admin_required(fn):
     @wraps(fn)
     def w(*a,**kw):
-        if session.get('admin_id') not in ADMIN_IDS:
+        current=session.get('admin_id')
+        allowed_ids=set(ADMIN_IDS)
+        configured=configured_web_admin_id()
+        if configured is not None:
+            allowed_ids.add(configured)
+        if current not in allowed_ids:
             return redirect(url_for('login'))
         ensure_schema()
         return fn(*a,**kw)
@@ -177,7 +199,8 @@ def admin_required(fn):
 
 def page(html, **ctx):
     ctx.setdefault('version', VERSION)
-    return render_template_string(BASE, body=render_template_string(html, **ctx), version=VERSION)
+    ctx.setdefault('theme', setting('web_theme') or 'dark')
+    return render_template_string(BASE, body=render_template_string(html, **ctx), version=VERSION, theme=ctx['theme'])
 
 
 def clean_base_url(value):
@@ -269,24 +292,80 @@ def telegram_notify(user_id,text):
 
 ensure_schema()
 
-LOGIN='''<div class="card login"><div class="logo">⚡</div><h2 style="text-align:center">ورود به پنل مدیریت</h2><p class="muted" style="text-align:center">آیدی عددی ادمین را وارد کن تا دسترسی بررسی شود.</p><form method="post"><input name="admin_id" inputmode="numeric" placeholder="مثلاً 123456789" required><button style="width:100%">🔐 ورود</button></form></div>'''
+LOGIN='''<div class="card login"><div class="logo">⚡</div><h2 style="text-align:center">ورود به پنل مدیریت</h2><p class="muted" style="text-align:center">آیدی عددی ادمین و در صورت فعال بودن ورود دو مرحله‌ای، رمز عبور را وارد کن.</p><form method="post"><label>آیدی عددی</label><input name="admin_id" inputmode="numeric" placeholder="مثلاً 123456789" required>{% if two_factor %}<label>رمز ورود</label><input name="password" type="password" placeholder="رمز ورود" required>{% endif %}<button style="width:100%">🔐 ورود</button></form></div>'''
 
 @app.route('/login',methods=['GET','POST'])
 def login():
-    ensure_schema()
+    ensure_schema(); configured=configured_web_admin_id(); two_factor=setting('web_2fa')=='1'
     if request.method=='POST':
         try: aid=int(request.form.get('admin_id',''))
         except Exception: aid=-1
-        if aid in ADMIN_IDS:
-            session['admin_id']=aid; return redirect(url_for('dashboard'))
-        return page('<div class="card login"><h2 class="bad">❌ چنین ادمینی وجود ندارد.</h2><a class="btn dark" href="/login">تلاش دوباره</a></div>')
-    return page(LOGIN)
+        allowed=set(ADMIN_IDS);
+        if configured is not None: allowed.add(configured)
+        if aid not in allowed:
+            return page('<div class="card login"><h2 class="bad">❌ آیدی ادمین صحیح نیست.</h2><a class="btn dark" href="/login">تلاش دوباره</a></div>',two_factor=two_factor)
+        if two_factor:
+            stored=setting('web_password_hash')
+            if not stored or not check_password_hash(stored, request.form.get('password','')):
+                return page('<div class="card login"><h2 class="bad">❌ رمز ورود اشتباه است.</h2><a class="btn dark" href="/login">تلاش دوباره</a></div>',two_factor=two_factor)
+        session['admin_id']=aid; return redirect(url_for('dashboard'))
+    return page(LOGIN,two_factor=two_factor)
 
 @app.route('/logout')
 def logout(): session.clear(); return redirect(url_for('login'))
 
 @app.route('/')
-def root(): return redirect(url_for('dashboard') if session.get('admin_id') in ADMIN_IDS else url_for('login'))
+def root():
+    allowed=set(ADMIN_IDS); configured=configured_web_admin_id()
+    if configured is not None: allowed.add(configured)
+    return redirect(url_for('dashboard') if session.get('admin_id') in allowed else url_for('login'))
+
+@app.route('/settings',methods=['GET','POST'])
+@admin_required
+def settings_web():
+    if request.method=='POST':
+        action=request.form.get('action','')
+        if action=='theme':
+            theme=request.form.get('theme','dark')
+            if theme in ('dark','light'):
+                set_setting('web_theme',theme); flash('✅ تم Web Panel تغییر کرد.')
+            return redirect(url_for('settings_web'))
+        if action=='security':
+            try: new_id=int(request.form.get('admin_id',''))
+            except Exception: new_id=0
+            if new_id<=0:
+                flash('❌ آیدی عددی معتبر نیست.')
+                return redirect(url_for('settings_web'))
+            enabled=request.form.get('two_factor')=='1'
+            password=request.form.get('password','')
+            confirm=request.form.get('password_confirm','')
+            old_enabled=setting('web_2fa')=='1'
+            if enabled and not old_enabled and not password:
+                flash('❌ برای فعال‌سازی ورود دو مرحله‌ای، رمز عبور را وارد کن.')
+                return redirect(url_for('settings_web'))
+            if password or confirm:
+                if len(password)<8:
+                    flash('❌ رمز عبور باید حداقل 8 کاراکتر باشد.')
+                    return redirect(url_for('settings_web'))
+                if password!=confirm:
+                    flash('❌ تکرار رمز عبور با رمز اصلی یکسان نیست.')
+                    return redirect(url_for('settings_web'))
+                set_setting('web_password_hash',generate_password_hash(password))
+            if enabled and not setting('web_password_hash'):
+                flash('❌ ابتدا رمز عبور را تنظیم کن.')
+                return redirect(url_for('settings_web'))
+            set_setting('web_admin_id',new_id)
+            set_setting('web_2fa','1' if enabled else '0')
+            session['admin_id']=new_id
+            flash('✅ تنظیمات ورود با موفقیت ذخیره شد.')
+            return redirect(url_for('settings_web'))
+    current_id=configured_web_admin_id() or ''
+    two_factor=setting('web_2fa')=='1'
+    theme=setting('web_theme') or 'dark'
+    b='''<div class="hero"><h2>⚙️ تنظیمات</h2><p>تنظیمات ظاهر Web Panel و امنیت ورود را از این بخش مدیریت کن.</p></div>
+<div class="card"><h3>🎨 تغییر Theme</h3><p class="muted">ظاهر پنل را به حالت سفید یا مشکی تغییر بده.</p><div class="actions"><form method="post"><input type="hidden" name="action" value="theme"><button name="theme" value="light">⚪ سفید</button></form><form method="post"><input type="hidden" name="action" value="theme"><button class="btn dark" name="theme" value="dark">⚫ مشکی</button></form></div><p class="small muted">Theme فعلی: {{'سفید' if theme=='light' else 'مشکی'}}</p></div>
+<div class="card"><h3>🔐 ورود دو مرحله‌ای</h3><form method="post" id="securityForm"><input type="hidden" name="action" value="security"><label>آیدی عددی Web Panel</label><input name="admin_id" type="number" min="1" value="{{current_id}}" required><div class="switch"><span><b>فعال‌سازی ورود دو مرحله‌ای</b><br><span class="muted small">بعد از فعال‌سازی، ورود با آیدی عددی + رمز انجام می‌شود.</span></span><input id="twoFactor" name="two_factor" value="1" type="checkbox" style="width:auto" {% if two_factor %}checked{% endif %} onchange="document.getElementById('passFields').style.display=this.checked?'block':'none'"></div><div id="passFields" style="display:{{'block' if two_factor else 'none'}}"><label>رمز عبور جدید</label><input name="password" type="password" minlength="8" placeholder="حداقل 8 کاراکتر"><label>تکرار رمز عبور</label><input name="password_confirm" type="password" minlength="8" placeholder="تکرار رمز"></div><button>💾 ذخیره تنظیمات</button></form></div>'''
+    return page(b,current_id=current_id,two_factor=two_factor,theme=theme)
 
 @app.route('/dashboard')
 @admin_required
