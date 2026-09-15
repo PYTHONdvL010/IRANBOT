@@ -37,7 +37,7 @@ input,textarea,select{width:100%;box-sizing:border-box;background:#081525;color:
 </style></head><body><div class="wrap">
 <div class="top"><div class="brand"><div class="logo">⚡</div><div><h1>IRANBOT <span class="version">v{{version}}</span></h1><div class="muted small">داشبورد مدیریت فروش و سرویس</div></div></div>{% if session.get('admin_id') %}<a class="logout" href="{{url_for('logout')}}">خروج ↪</a>{% endif %}</div>
 {% if session.get('admin_id') %}<div class="nav">
-<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('discount')}}">🏷 تخفیف</a><a href="{{url_for('backup')}}">💾 پشتیبان‌گیری</a>
+<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('finance_report_web')}}">📊 گزارش مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('discount')}}">🏷 تخفیف</a><a href="{{url_for('backup')}}">💾 پشتیبان‌گیری</a>
 </div>{% endif %}
 {% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}
 <div class="muted small" style="margin:28px 2px 0">IRANBOT — نسخه {{version}} — ساخته شده توسط PYTHONdvL010</div></div></body></html>
@@ -128,6 +128,7 @@ def ensure_schema():
         c.execute("CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,product_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_at DATETIME DEFAULT CURRENT_TIMESTAMP,subscription TEXT DEFAULT '',panel_username TEXT DEFAULT '')")
         c.execute("CREATE TABLE IF NOT EXISTS configs(id INTEGER PRIMARY KEY AUTOINCREMENT,product_id INTEGER NOT NULL,config TEXT NOT NULL,delivered INTEGER DEFAULT 0)")
         c.execute("CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,kind TEXT NOT NULL,order_id INTEGER,amount INTEGER NOT NULL,status TEXT DEFAULT 'pending',photo_file_id TEXT,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+        c.execute("CREATE TABLE IF NOT EXISTS renewals(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,order_id INTEGER NOT NULL,full_price INTEGER NOT NULL,remaining_gb REAL DEFAULT 0,charge_gb REAL DEFAULT 0,amount INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS free_test_settings(panel_id INTEGER PRIMARY KEY,max_tests INTEGER DEFAULT 1,data_limit_mb INTEGER DEFAULT 100,expire_hours INTEGER DEFAULT 1,enabled INTEGER DEFAULT 1)")
         for table, columns in {
             'users': [('username',"TEXT DEFAULT ''"),('first_name',"TEXT DEFAULT ''"),('is_blocked','INTEGER DEFAULT 0'),('last_seen',"TEXT DEFAULT ''")],
@@ -346,6 +347,33 @@ def finance():
     with db() as c: pending=c.execute("SELECT COUNT(*) FROM payments WHERE status='pending'").fetchone()[0]
     b='''<div class="hero"><h2>💳 بخش مالی</h2><p>اطلاعات کارت فقط در مرحله پرداخت به کاربر نمایش داده می‌شود؛ داخل کیف پول نمایش داده نمی‌شود.</p></div><div class="card"><form method="post"><label>شماره کارت</label><input name="card" value="{{card}}" inputmode="numeric" maxlength="16" placeholder="16 رقم"><label>نام صاحب کارت</label><input name="owner" value="{{owner}}" placeholder="نام و نام خانوادگی"><button>💾 ذخیره</button></form></div><div class="grid"><div class="statcard"><div class="statlabel">پرداخت‌های در انتظار</div><div class="stat">{{pending}}</div></div><div class="statcard"><div class="statlabel">کارت ثبت‌شده</div><div class="stat">{{'✅' if card else '❌'}}</div></div></div>'''
     return page(b,card=setting('card_number'),owner=setting('card_owner'),pending=pending)
+
+@app.route('/finance/report')
+@admin_required
+def finance_report_web():
+    with db() as c:
+        approved_receipts=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('order','renewal','wallet_topup','wallet_topup_for_order')").fetchone()
+        wallet_topups=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('wallet_topup','wallet_topup_for_order')").fetchone()
+        direct=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('order','renewal')").fetchone()
+        wallet_buy=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('wallet_purchase','renewal_wallet')").fetchone()
+        renew=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('renewal','renewal_wallet')").fetchone()
+        wallet_total=c.execute("SELECT COALESCE(SUM(balance),0) FROM wallets").fetchone()[0]
+        pending=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='pending'").fetchone()
+        recent=c.execute("SELECT id,user_id,kind,order_id,amount,status,created_at FROM payments ORDER BY id DESC LIMIT 30").fetchall()
+    b='''<div class="hero"><h2>📊 گزارش مالی</h2><p>نمایش دقیق واریزی رسیدها، شارژ کیف پول، خرید مستقیم، خرید از کیف پول، تمدیدها و پول آماده داخل کیف پول کاربران.</p></div>
+    <div class="grid">
+      <div class="statcard"><div class="staticon">💰</div><div class="statlabel">کل واریزی رسیدهای تأییدشده</div><div class="stat">{{approved[0]|int|format:,}} تومان</div><div class="kpi">{{approved[1]}} رسید</div></div>
+      <div class="statcard"><div class="staticon">💳</div><div class="statlabel">شارژ کیف پول</div><div class="stat">{{topups[0]|int|format:,}} تومان</div><div class="kpi">{{topups[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">🛒</div><div class="statlabel">خرید مستقیم</div><div class="stat">{{direct[0]|int|format:,}} تومان</div><div class="kpi">{{direct[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">👛</div><div class="statlabel">خرید از کیف پول</div><div class="stat">{{wallet_buy[0]|int|format:,}} تومان</div><div class="kpi">{{wallet_buy[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">🔄</div><div class="statlabel">تمدید سرویس</div><div class="stat">{{renew[0]|int|format:,}} تومان</div><div class="kpi">{{renew[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">💵</div><div class="statlabel">پول آماده در کیف پول کاربران</div><div class="stat">{{wallet_total|int|format:,}} تومان</div><div class="kpi">موجودی فعلی کاربران</div></div>
+      <div class="statcard"><div class="staticon">⏳</div><div class="statlabel">پرداخت‌های در انتظار</div><div class="stat">{{pending[0]|int|format:,}} تومان</div><div class="kpi">{{pending[1]}} مورد</div></div>
+    </div>
+    <div class="card"><h3>🧾 آخرین تراکنش‌ها</h3><div class="table-wrap"><table class="table"><tr><th>ID</th><th>User</th><th>نوع</th><th>Order</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr>{% for r in recent %}<tr><td>#{{r[0]}}</td><td>{{r[1]}}</td><td>{{labels.get(r[2],r[2])}}</td><td>{{r[3] or '-'}}</td><td>{{r[4]|int|format:,}} تومان</td><td><span class="badge {{'ok' if r[5]=='approved' else 'warn' if r[5]=='pending' else 'bad'}}">{{r[5]}}</span></td><td>{{r[6]}}</td></tr>{% endfor %}</table></div></div>'''
+    labels={'order':'🛒 خرید مستقیم','renewal':'🔄 تمدید مستقیم','wallet_topup':'💳 شارژ کیف پول','wallet_topup_for_order':'💳 شارژ برای خرید','wallet_purchase':'👛 خرید از کیف پول','renewal_wallet':'🔄 تمدید از کیف پول'}
+    return page(b,approved=approved_receipts,topups=wallet_topups,direct=direct,wallet_buy=wallet_buy,renew=renew,wallet_total=wallet_total,pending=pending,recent=recent,labels=labels)
+
 
 @app.route('/panels',methods=['GET','POST'])
 @admin_required

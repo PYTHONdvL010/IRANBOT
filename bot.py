@@ -99,6 +99,11 @@ def init_db():
             message TEXT DEFAULT '', photo_file_id TEXT DEFAULT '', status TEXT DEFAULT 'open',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS renewals(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, order_id INTEGER NOT NULL,
+            full_price INTEGER NOT NULL, remaining_gb REAL DEFAULT 0, charge_gb REAL DEFAULT 0,
+            amount INTEGER NOT NULL, status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
         c.execute("""CREATE TABLE IF NOT EXISTS free_test_settings(
             panel_id INTEGER PRIMARY KEY, max_tests INTEGER DEFAULT 1, data_limit_mb INTEGER DEFAULT 100,
             expire_hours INTEGER DEFAULT 1, enabled INTEGER DEFAULT 1
@@ -433,7 +438,7 @@ async def service_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ سرویس پیدا نشد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سرویس‌های من",callback_data="orders")]])); return
     oid,name,status,sub,username,price,gb,days=row
     text=f"📦 سرویس #{oid}\n\nنام: {name}\n📦 حجم: {gb or 1} GB\n⏳ اعتبار: {days or 1} روز\n💰 مبلغ: {price}\n👤 Username: {username or '-'}\n\n🔗 Subscription:\n{sub or 'لینک موجود نیست.'}"
-    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سرویس‌های من",callback_data="orders")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تمدید سرویس",callback_data=f"renew:{oid}")],[InlineKeyboardButton("📦 سرویس‌های من",callback_data="orders")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
 
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -606,7 +611,25 @@ async def admin_finance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(q.from_user.id): return
     card=await get_setting("card_number"); owner=await get_setting("card_owner")
     with conn() as c: pending=c.execute("SELECT COUNT(*) FROM payments WHERE status='pending'").fetchone()[0]
-    await q.edit_message_text(f"💳 بخش مالی\n\n💳 شماره کارت: {card or 'ثبت نشده'}\n👤 صاحب کارت: {owner or 'ثبت نشده'}\n\n⏳ پرداخت‌های در انتظار: {pending}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ ثبت/تغییر شماره کارت",callback_data="finance_card")],[InlineKeyboardButton("📋 پرداخت‌های در انتظار",callback_data="finance_pending")],[InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")]]))
+    await q.edit_message_text(f"💳 بخش مالی\n\n💳 شماره کارت: {card or 'ثبت نشده'}\n👤 صاحب کارت: {owner or 'ثبت نشده'}\n\n⏳ پرداخت‌های در انتظار: {pending}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ ثبت/تغییر شماره کارت",callback_data="finance_card")],[InlineKeyboardButton("📋 پرداخت‌های در انتظار",callback_data="finance_pending")],[InlineKeyboardButton("📊 گزارش مالی",callback_data="finance_report")],[InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")]]))
+
+
+async def finance_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    with conn() as c:
+        approved_receipts=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('order','renewal','wallet_topup','wallet_topup_for_order')").fetchone()
+        wallet_topups=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('wallet_topup','wallet_topup_for_order')").fetchone()
+        direct=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('order','renewal')").fetchone()
+        wallet_buy=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('wallet_purchase','renewal_wallet')").fetchone()
+        renew=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='approved' AND kind IN ('renewal','renewal_wallet')").fetchone()
+        wallet_total=c.execute("SELECT COALESCE(SUM(balance),0) FROM wallets").fetchone()[0]
+        pending=c.execute("SELECT COALESCE(SUM(amount),0),COUNT(*) FROM payments WHERE status='pending'").fetchone()
+    text=(f"📊 گزارش مالی\n\n💰 کل واریزی رسیدهای تأییدشده: {approved_receipts[0]:,} تومان\n🧾 تعداد رسیدهای تأییدشده: {approved_receipts[1]}\n\n"
+          f"💳 شارژ کیف پول: {wallet_topups[0]:,} تومان | {wallet_topups[1]} مورد\n🛒 خرید مستقیم: {direct[0]:,} تومان | {direct[1]} مورد\n"
+          f"👛 خرید از کیف پول: {wallet_buy[0]:,} تومان | {wallet_buy[1]} مورد\n🔄 تمدید سرویس: {renew[0]:,} تومان | {renew[1]} مورد\n\n"
+          f"💵 پول آماده در کیف پول کاربران: {wallet_total:,} تومان\n⏳ پرداخت‌های در انتظار: {pending[0]:,} تومان | {pending[1]} مورد")
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('↩️ بخش مالی',callback_data='admin_finance')]]))
 
 
 async def finance_card_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1047,6 +1070,151 @@ async def pasarguard_create_user(panel_id: int, username: str, data_limit: int, 
         await client.aclose()
 
 
+
+async def pasarguard_get_user(panel_id: int, username: str):
+    """Fetch a PasarGuard user using current ID-based API with username fallback."""
+    client, base, headers = await pg_client(panel_id)
+    try:
+        paths = [f"{base}/api/user/by-username/{username}", f"{base}/api/user/{username}"]
+        last = None
+        for url in paths:
+            r = await client.get(url, headers=headers)
+            last = r
+            if r.status_code == 404:
+                continue
+            if r.status_code in (401,403):
+                raise RuntimeError("user_permission")
+            r.raise_for_status()
+            data = r.json()
+            user = data.get("user") if isinstance(data, dict) and isinstance(data.get("user"), dict) else data
+            if isinstance(user, dict):
+                return user
+        if last is not None and last.status_code == 404:
+            raise RuntimeError("user_not_found")
+        raise RuntimeError("bad_user_response")
+    finally:
+        await client.aclose()
+
+
+def _to_num(v, default=0):
+    try: return float(v)
+    except Exception: return default
+
+
+def _parse_expire(value):
+    if not value: return None
+    try:
+        text=str(value).replace('Z','+00:00')
+        dt=datetime.fromisoformat(text)
+        if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+async def get_renewal_quote(oid, uid):
+    with conn() as c:
+        row=c.execute("""SELECT o.id,o.user_id,o.product_id,o.panel_username,o.subscription,
+            p.name,p.price,p.panel_id,p.data_limit_gb,p.expire_days,pa.panel_type
+            FROM orders o JOIN products p ON p.id=o.product_id
+            LEFT JOIN panels pa ON pa.id=p.panel_id
+            WHERE o.id=? AND o.user_id=? AND o.status='paid'""",(oid,uid)).fetchone()
+    if not row: raise RuntimeError("service_not_found")
+    oid,_,pid,username,sub,name,price,panel_id,total_gb,days,panel_type=row
+    if not username or panel_type!='pasarguard': raise RuntimeError("renewal_only_pasarguard")
+    user=await pasarguard_get_user(panel_id,username)
+    limit=_to_num(user.get('data_limit'), (total_gb or 1)*1024**3)
+    used=_to_num(user.get('used_traffic'),0)
+    remaining=max(0.0,limit-used)
+    full_bytes=max(1,(int(total_gb or 1)*1024**3))
+    remaining_gb=remaining/1024**3
+    charge_gb=max(0.0,(full_bytes-remaining)/1024**3)
+    full_price=int(re.sub(r'\D','',str(price)) or 0)
+    amount=0 if charge_gb<=0 else int(round(full_price*(charge_gb/(float(total_gb or 1)))))
+    # If the user has exhausted the quota, charge the full package price.
+    amount=min(full_price,max(0,amount))
+    expire=_parse_expire(user.get('expire'))
+    expire_days=max(0, int((expire-datetime.now(timezone.utc)).total_seconds()/86400)) if expire else 0
+    return {'oid':oid,'name':name,'username':username,'panel_id':panel_id,'total_gb':float(total_gb or 1),
+            'days':int(days or 1),'full_price':full_price,'remaining_gb':remaining_gb,'charge_gb':charge_gb,
+            'amount':amount,'expire_days_left':expire_days,'user':user}
+
+
+async def renew_service_api(quote):
+    panel_id=quote['panel_id']; username=quote['username']; total_bytes=int(quote['total_gb']*1024**3); days=quote['days']
+    user=quote['user']; uid=user.get('id') or user.get('user_id')
+    client,base,headers=await pg_client(panel_id)
+    try:
+        payload={"expire":(datetime.now(timezone.utc)+timedelta(days=days)).replace(microsecond=0).isoformat(),
+                 "data_limit":total_bytes,"data_limit_reset_strategy":"no_reset","status":"active"}
+        urls=[]
+        if uid is not None: urls.append(f"{base}/api/user/by-id/{uid}")
+        urls.append(f"{base}/api/user/{username}")
+        last=None
+        for url in urls:
+            r=await client.put(url,headers=headers,json=payload); last=r
+            if r.status_code==404: continue
+            if r.status_code in (401,403): raise RuntimeError('renewal_permission')
+            if r.status_code in (400,422): raise RuntimeError(f"renewal_update:{r.text[:500]}")
+            r.raise_for_status()
+            data=r.json(); return data.get('user') if isinstance(data,dict) and isinstance(data.get('user'),dict) else data
+        raise RuntimeError(f"renewal_update_http_{last.status_code if last else 'unknown'}")
+    finally:
+        await client.aclose()
+
+
+async def renewal_quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer('در حال محاسبه...')
+    oid=int(q.data.split(':')[1]); uid=q.from_user.id
+    try: quote=await get_renewal_quote(oid,uid)
+    except Exception as e:
+        await q.edit_message_text('❌ امکان محاسبه تمدید وجود ندارد.\n\n'+str(e)[:500],reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('📦 سرویس‌های من',callback_data='orders')]])); return
+    text=(f"🔄 تمدید سرویس #{oid}\n\n📦 {quote['name']}\n\n"
+          f"📦 حجم کامل: {quote['total_gb']:g} GB\n💾 حجم باقی‌مانده: {quote['remaining_gb']:.2f} GB\n"
+          f"➕ حجم موردنیاز برای شارژ کامل: {quote['charge_gb']:.2f} GB\n⏳ مدت تمدید: {quote['days']} روز\n"
+          f"💰 قیمت کامل: {quote['full_price']:,} تومان\n\n"
+          f"💳 مبلغ تمدید: {quote['amount']:,} تومان\n\nبا تمدید، حجم سرویس به {quote['total_gb']:g}GB و اعتبار آن به {quote['days']} روز کامل می‌شود.")
+    with conn() as c: bal=c.execute('SELECT balance FROM wallets WHERE user_id=?',(uid,)).fetchone(); balance=bal[0] if bal else 0
+    kb=[[InlineKeyboardButton(f"💰 پرداخت از کیف پول ({balance:,})",callback_data=f"renew_wallet:{oid}")],
+        [InlineKeyboardButton('💳 پرداخت مستقیم',callback_data=f"renew_direct:{oid}")],
+        [InlineKeyboardButton('↩️ سرویس',callback_data=f"service:{oid}")]]
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def renew_wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer('در حال تمدید...'); oid=int(q.data.split(':')[1]); uid=q.from_user.id
+    try: quote=await get_renewal_quote(oid,uid)
+    except Exception as e:
+        await q.edit_message_text('❌ '+str(e)[:500]); return
+    with conn() as c: w=c.execute('SELECT balance FROM wallets WHERE user_id=?',(uid,)).fetchone(); balance=w[0] if w else 0
+    if balance<quote['amount']:
+        await q.edit_message_text(f"❌ موجودی کافی نیست.\n\nموجودی: {balance:,} تومان\nلازم: {quote['amount']:,} تومان",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💰 شارژ کیف پول',callback_data='wallet_topup')],[InlineKeyboardButton('↩️ تمدید',callback_data=f'renew:{oid}')]])); return
+    try:
+        await renew_service_api(quote)
+        with conn() as c:
+            c.execute('UPDATE wallets SET balance=balance-? WHERE user_id=?',(quote['amount'],uid))
+            c.execute('INSERT INTO payments(user_id,kind,order_id,amount,status) VALUES(?,?,?,?,?)',(uid,'renewal_wallet',oid,quote['amount'],'approved'))
+            c.execute('INSERT INTO renewals(user_id,order_id,full_price,remaining_gb,charge_gb,amount,status) VALUES(?,?,?,?,?,?,?)',(uid,oid,quote['full_price'],quote['remaining_gb'],quote['charge_gb'],quote['amount'],'approved'))
+        await q.edit_message_text(f"✅ سرویس #{oid} با موفقیت تمدید شد.\n\n💾 حجم: {quote['total_gb']:g} GB\n⏳ اعتبار: {quote['days']} روز\n💰 مبلغ پرداختی: {quote['amount']:,} تومان",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('📦 سرویس‌های من',callback_data='orders')],[InlineKeyboardButton('💰 کیف پول',callback_data='wallet')]]))
+    except Exception as e:
+        await q.edit_message_text(f"❌ تمدید انجام نشد؛ مبلغی از کیف پول کم نشد.\n\n{str(e)[:600]}")
+
+
+async def renew_direct_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); oid=int(q.data.split(':')[1]); uid=q.from_user.id
+    try: quote=await get_renewal_quote(oid,uid)
+    except Exception as e:
+        await q.edit_message_text('❌ '+str(e)[:500]); return
+    if quote['amount']<=0:
+        await q.edit_message_text('ℹ️ این سرویس در حال حاضر نیازی به پرداخت برای شارژ کامل ندارد.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('📦 سرویس‌های من',callback_data='orders')]])); return
+    info=await payment_card_info(quote['amount'],'order')
+    if not info: await q.edit_message_text('❌ شماره کارت فروشگاه هنوز ثبت نشده.'); return
+    with conn() as c:
+        payid=c.execute('INSERT INTO payments(user_id,kind,order_id,amount) VALUES(?,?,?,?)',(uid,'renewal',oid,quote['amount'])).lastrowid
+        c.execute('INSERT INTO renewals(user_id,order_id,full_price,remaining_gb,charge_gb,amount,status) VALUES(?,?,?,?,?,?,?)',(uid,oid,quote['full_price'],quote['remaining_gb'],quote['charge_gb'],quote['amount'],'pending'))
+    context.user_data['flow']={'type':'payment_photo','payment_id':payid}
+    await q.edit_message_text(info+'\n\n🔄 این رسید مربوط به تمدید سرویس است.',reply_markup=user_cancel_keyboard())
+
 async def create_pg_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
@@ -1372,7 +1540,9 @@ async def deliver_order(q,oid,uid,from_wallet=False):
         sub=user.get("subscription_url") or user.get("sub_url") or user.get("subscription")
         if sub: sub=full_subscription_url(pt[1],sub)
         with conn() as c:
-            if from_wallet: c.execute("UPDATE wallets SET balance=balance-? WHERE user_id=?",(amount,uid))
+            if from_wallet:
+                c.execute("UPDATE wallets SET balance=balance-? WHERE user_id=?",(amount,uid))
+                c.execute("INSERT INTO payments(user_id,kind,order_id,amount,status) VALUES(?,?,?,?,?)",(uid,'wallet_purchase',oid,amount,'approved'))
             c.execute("UPDATE orders SET status='paid',subscription=?,panel_username=? WHERE id=?",(sub or '',username,oid))
         result_text=f"🎉 سفارش #{oid} تأیید و تحویل شد.\n\n📦 {name}\n📦 حجم: {gb or 1} GB\n⏳ اعتبار: {days or 1} روز\n\n🔗 Subscription:\n{sub or '⚠️ لینک subscription دریافت نشد.'}"
         markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 سفارش‌های من",callback_data="orders")],[InlineKeyboardButton("💰 کیف پول",callback_data="wallet")]])
@@ -1397,7 +1567,7 @@ async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYP
     if not row: await update.message.reply_text("❌ پرداخت پیدا نشد."); return
     pid,uid,kind,oid,amount=row
     await update.message.reply_text("✅ رسید دریافت شد. بعد از تأیید ادمین نتیجه اعلام می‌شود.",reply_markup=menu(uid))
-    label={"order":"🛒 خرید سرویس","wallet_topup":"💰 شارژ کیف پول","wallet_topup_for_order":"💰 شارژ برای خرید"}.get(kind,kind)
+    label={"order":"🛒 خرید سرویس","wallet_topup":"💰 شارژ کیف پول","wallet_topup_for_order":"💰 شارژ برای خرید","renewal":"🔄 تمدید سرویس"}.get(kind,kind)
     cap=f"💳 رسید #{pid}\n\nنوع: {label}\n👤 User ID: {uid}\n💰 مبلغ: {amount:,} تومان"+(f"\n📦 سفارش: #{oid}" if oid else "")
     kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأیید",callback_data=f"payapprove:{pid}"),InlineKeyboardButton("❌ رد",callback_data=f"payreject:{pid}")]])
     for aid in ADMIN_IDS:
@@ -1418,6 +1588,20 @@ async def approve_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_caption(caption=f"✅ شارژ #{payid} تأیید شد. +{amount:,} تومان")
         try: await context.bot.send_message(uid,f"🎉 شارژ کیف پول تأیید شد.\n💰 +{amount:,} تومان",reply_markup=menu(uid))
         except Exception: pass
+        return
+    if kind=="renewal":
+        try:
+            quote=await get_renewal_quote(oid,uid)
+            if quote['amount'] != amount: raise RuntimeError('مبلغ تمدید تغییر کرده؛ رسید نیاز به بررسی مجدد دارد.')
+            await renew_service_api(quote)
+            with conn() as c:
+                c.execute("UPDATE payments SET status='approved' WHERE id=?",(payid,))
+                c.execute("UPDATE renewals SET status='approved' WHERE user_id=? AND order_id=? AND status='pending'",(uid,oid))
+            await q.edit_message_caption(caption=f"✅ تمدید #{payid} تأیید شد.\n💰 {amount:,} تومان")
+            try: await context.bot.send_message(uid,f"🎉 تمدید سرویس #{oid} با موفقیت انجام شد.\n\n💾 حجم کامل: {quote['total_gb']:g} GB\n⏳ اعتبار: {quote['days']} روز\n💰 مبلغ: {amount:,} تومان",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('📦 سرویس‌های من',callback_data='orders')]]))
+            except Exception: pass
+        except Exception as e:
+            await q.edit_message_caption(caption=f"❌ تمدید انجام نشد و رسید در حالت بررسی ماند.\n\n{str(e)[:500]}")
         return
     if kind=="wallet_topup_for_order":
         with conn() as c: c.execute("UPDATE payments SET status='approved' WHERE id=?",(payid,)); c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)",(uid,)); c.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?",(amount,uid))
@@ -1443,7 +1627,10 @@ async def reject_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not row: return
     uid,kind,oid,amount,status=row
     if status!="pending": await q.edit_message_caption(caption=f"ℹ️ قبلاً پردازش شده: {status}"); return
-    with conn() as c: c.execute("UPDATE payments SET status='rejected' WHERE id=?",(payid,)); c.execute("UPDATE orders SET status='payment_rejected' WHERE id=?",(oid,)) if kind=="order" and oid else None
+    with conn() as c:
+        c.execute("UPDATE payments SET status='rejected' WHERE id=?",(payid,))
+        if kind=="order" and oid: c.execute("UPDATE orders SET status='payment_rejected' WHERE id=?",(oid,))
+        if kind=='renewal' and oid: c.execute("UPDATE renewals SET status='rejected' WHERE user_id=? AND order_id=? AND status='pending'",(uid,oid))
     await q.edit_message_caption(caption=f"❌ پرداخت #{payid} رد شد.")
     try: await context.bot.send_message(uid,f"❌ رسید پرداخت رد شد.\n💰 مبلغ: {amount:,} تومان",reply_markup=menu(uid))
     except Exception: pass
@@ -1716,12 +1903,16 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data=="admin_finance": return await admin_finance(update,context)
     if data=="finance_card": return await finance_card_start(update,context)
     if data=="finance_pending": return await finance_pending(update,context)
+    if data=="finance_report": return await finance_report(update,context)
     if data=="wallet_topup": return await wallet_topup_start(update,context)
     if data.startswith("pay_direct:"): return await pay_direct_start(update,context)
     if data.startswith("pay_wallet:"): return await pay_wallet_start(update,context)
     if data.startswith("payapprove:"): return await approve_payment(update,context)
     if data.startswith("payreject:"): return await reject_payment(update,context)
     if data.startswith("service:"): return await service_detail(update,context)
+    if data.startswith("renew:"): return await renewal_quote(update,context)
+    if data.startswith("renew_wallet:"): return await renew_wallet_start(update,context)
+    if data.startswith("renew_direct:"): return await renew_direct_start(update,context)
     if data.startswith("free_test_settings:"): return await free_test_settings_start(update,context)
     if data.startswith("free_test_panel:"): return await free_test_panel_start(update,context)
     if data.startswith("support_reply:"): return await support_reply_start(update,context)
