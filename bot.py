@@ -104,6 +104,11 @@ def init_db():
             full_price INTEGER NOT NULL, remaining_gb REAL DEFAULT 0, charge_gb REAL DEFAULT 0,
             amount INTEGER NOT NULL, status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS coupons(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE,
+            discount_type TEXT NOT NULL, value INTEGER NOT NULL, duration_days INTEGER NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP, expires_at DATETIME NOT NULL, active INTEGER DEFAULT 1
+        )""")
         c.execute("""CREATE TABLE IF NOT EXISTS free_test_settings(
             panel_id INTEGER PRIMARY KEY, max_tests INTEGER DEFAULT 1, data_limit_mb INTEGER DEFAULT 100,
             expire_hours INTEGER DEFAULT 1, enabled INTEGER DEFAULT 1
@@ -125,6 +130,12 @@ def init_db():
             c.execute("ALTER TABLE orders ADD COLUMN subscription TEXT DEFAULT ''")
         if "panel_username" not in order_cols:
             c.execute("ALTER TABLE orders ADD COLUMN panel_username TEXT DEFAULT ''")
+        if "discount_code" not in order_cols:
+            c.execute("ALTER TABLE orders ADD COLUMN discount_code TEXT DEFAULT ''")
+        if "discount_amount" not in order_cols:
+            c.execute("ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0")
+        if "final_amount" not in order_cols:
+            c.execute("ALTER TABLE orders ADD COLUMN final_amount INTEGER DEFAULT 0")
 
 
 
@@ -255,8 +266,7 @@ def menu(user_id: int):
         [InlineKeyboardButton("🛒 خرید سرویس", callback_data="products")],
         [InlineKeyboardButton("📦 سفارش‌های من", callback_data="orders"),
          InlineKeyboardButton("👤 حساب من", callback_data="profile")],
-        [InlineKeyboardButton("💰 کیف پول", callback_data="wallet"),
-         InlineKeyboardButton("🎁 کد تخفیف", callback_data="coupon")],
+        [InlineKeyboardButton("💰 کیف پول", callback_data="wallet")],
         [InlineKeyboardButton("🎁 تست رایگان", callback_data="free_test")],
         [InlineKeyboardButton("💬 پشتیبانی", callback_data="support")],
     ]
@@ -272,6 +282,7 @@ def admin_menu():
         [InlineKeyboardButton("👋 پیام خوش‌آمد", callback_data="admin_welcome")],
         [InlineKeyboardButton("📢 عضویت اجباری", callback_data="admin_mandatory")],
         [InlineKeyboardButton("💳 بخش مالی", callback_data="admin_finance")],
+        [InlineKeyboardButton("🏷 کدهای تخفیف", callback_data="admin_discounts")],
         [InlineKeyboardButton("🖥 پنل‌ها", callback_data="admin_panels")],
         [InlineKeyboardButton("📋 محصولات", callback_data="admin_products")],
         [InlineKeyboardButton("📦 سفارش‌ها", callback_data="admin_orders")],
@@ -367,6 +378,107 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(render_welcome(user), reply_markup=menu(user.id))
 
 
+def money_int(value):
+    return int(re.sub(r"\D", "", str(value or "")) or 0)
+
+def coupon_discount(base_amount, discount_type, value):
+    if discount_type == "percent":
+        value = max(0, min(100, int(value)))
+        discount = int(round(base_amount * value / 100))
+    else:
+        discount = max(0, int(value))
+    return min(base_amount, discount)
+
+def get_active_coupon(code):
+    code = (code or "").strip().upper()
+    if not code: return None
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    with conn() as c:
+        return c.execute("SELECT id,code,discount_type,value,duration_days,expires_at,active FROM coupons WHERE code=? AND active=1 AND expires_at>?", (code, now)).fetchone()
+
+def order_pricing(oid, uid):
+    with conn() as c:
+        row=c.execute("""SELECT o.id,o.user_id,o.product_id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(o.discount_code,''),COALESCE(o.discount_amount,0),COALESCE(o.final_amount,0)
+            FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?""",(oid,uid)).fetchone()
+        bal=c.execute("SELECT COALESCE(balance,0) FROM wallets WHERE user_id=?",(uid,)).fetchone()
+    if not row: return None
+    base=money_int(row[4]); final=int(row[9] or 0) or base
+    return {"oid":row[0],"name":row[3],"base":base,"final":final,"gb":row[5] or 1,"days":row[6] or 1,"discount_code":row[7],"discount_amount":int(row[8] or 0),"balance":bal[0] if bal else 0}
+
+def order_payment_markup(oid,balance,has_discount=False):
+    label="🏷 تغییر کد تخفیف" if has_discount else "🏷 وارد کردن کد تخفیف"
+    return InlineKeyboardMarkup([[InlineKeyboardButton("💳 پرداخت مستقیم",callback_data=f"pay_direct:{oid}")],[InlineKeyboardButton(f"💰 پرداخت از کیف پول (موجودی {balance:,})",callback_data=f"pay_wallet:{oid}")],[InlineKeyboardButton(label,callback_data=f"coupon_order:{oid}")],[InlineKeyboardButton("↩️ محصولات",callback_data="products")]])
+
+async def show_order_payment(q,oid,uid):
+    info=order_pricing(oid,uid)
+    if not info:
+        await q.edit_message_text("❌ سفارش پیدا نشد."); return
+    discount_line=f"\n🏷 تخفیف ({info['discount_code']}): {info['discount_amount']:,} تومان" if info['discount_code'] else ""
+    await q.edit_message_text(f"📦 سفارش #{oid}\n\nمحصول: {info['name']}\n📦 حجم: {info['gb']} GB\n⏳ اعتبار: {info['days']} روز\n💰 قیمت اصلی: {info['base']:,} تومان{discount_line}\n💵 مبلغ قابل پرداخت: {info['final']:,} تومان\n\nروش پرداخت را انتخاب کن:",reply_markup=order_payment_markup(oid,info['balance'],bool(info['discount_code'])))
+
+async def coupon_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); oid=int(q.data.split(":")[1])
+    if not order_pricing(oid,q.from_user.id):
+        await q.edit_message_text("❌ سفارش پیدا نشد."); return
+    with conn() as c: pending=c.execute("SELECT COUNT(*) FROM payments WHERE order_id=? AND status='pending'",(oid,)).fetchone()[0]
+    if pending:
+        await q.answer("برای این سفارش یک پرداخت در انتظار بررسی وجود دارد.",show_alert=True); return
+    context.user_data["flow"]={"type":"coupon_user","order_id":oid}
+    await q.edit_message_text("🏷 کد تخفیف را وارد کن:",reply_markup=user_cancel_keyboard())
+
+async def coupon_user_flow(message,context):
+    flow=context.user_data.get("flow",{}); oid=int(flow.get("order_id",0)); code=(message.text or "").strip().upper()
+    coupon=get_active_coupon(code)
+    if not coupon:
+        await message.reply_text("❌ کد تخفیف نامعتبر است یا اعتبارش تمام شده. دوباره وارد کن.",reply_markup=user_cancel_keyboard()); return
+    info=order_pricing(oid,message.from_user.id)
+    if not info:
+        context.user_data.pop("flow",None); await message.reply_text("❌ سفارش پیدا نشد.",reply_markup=menu(message.from_user.id)); return
+    discount=coupon_discount(info["base"],coupon[2],coupon[3]); final=max(0,info["base"]-discount)
+    with conn() as c: c.execute("UPDATE orders SET discount_code=?,discount_amount=?,final_amount=? WHERE id=? AND user_id=?",(coupon[1],discount,final,oid,message.from_user.id))
+    context.user_data.pop("flow",None)
+    await message.reply_text(f"✅ کد تخفیف {coupon[1]} اعمال شد.\n\n🏷 تخفیف: {discount:,} تومان\n💵 مبلغ نهایی: {final:,} تومان")
+    await message.reply_text("حالا روش پرداخت را انتخاب کن:",reply_markup=order_payment_markup(oid,info["balance"],True))
+
+async def admin_discounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    with conn() as c: rows=c.execute("SELECT id,code,discount_type,value,duration_days,expires_at,active FROM coupons ORDER BY id DESC LIMIT 50").fetchall()
+    lines=["🏷 کدهای تخفیف\n"]
+    if not rows: lines.append("هنوز کد تخفیفی ثبت نشده.")
+    else:
+        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        for rid,code,dtype,val,days,exp,active in rows:
+            kind=f"{val}%" if dtype=="percent" else f"{val:,} تومان"; status="🟢 فعال" if active and exp>now else "🔴 منقضی/غیرفعال"
+            lines.append(f"• {code} — {kind} — {days} روز — {status}\n  انقضا: {exp}")
+    await q.edit_message_text("\n".join(lines),reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ افزودن کد تخفیف",callback_data="discount_add")],[InlineKeyboardButton("🗑 حذف یک کد",callback_data="discount_delete_list")],[InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")]]))
+
+async def discount_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    await q.edit_message_text("نوع تخفیف را انتخاب کن:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("٪ درصدی",callback_data="discount_type:percent"),InlineKeyboardButton("💰 مبلغی",callback_data="discount_type:amount")],[InlineKeyboardButton("↩️ بازگشت",callback_data="admin_discounts")]]))
+
+async def discount_type_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    dtype=q.data.split(":")[1]; context.user_data["flow"]={"type":"discount_admin","step":"value","discount_type":dtype}
+    prompt="٪ چند درصد تخفیف؟\nمثال: 20\nحداکثر 100 درصد." if dtype=="percent" else "💰 چقدر از مبلغ کم شود؟\nبه تومان فقط عدد وارد کن.\nمثال: 50000"
+    await q.edit_message_text(prompt,reply_markup=cancel_keyboard())
+
+async def discount_delete_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    with conn() as c: rows=c.execute("SELECT id,code FROM coupons ORDER BY id DESC LIMIT 50").fetchall()
+    buttons=[[InlineKeyboardButton(f"🗑 {code}",callback_data=f"discount_delete:{rid}")] for rid,code in rows]; buttons.append([InlineKeyboardButton("↩️ بازگشت",callback_data="admin_discounts")])
+    await q.edit_message_text("کدی که می‌خواهی حذف شود را انتخاب کن:",reply_markup=InlineKeyboardMarkup(buttons))
+
+async def discount_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query
+    if not is_admin(q.from_user.id): return
+    rid=int(q.data.split(":")[1])
+    with conn() as c: c.execute("DELETE FROM coupons WHERE id=?",(rid,))
+    await q.answer("کد تخفیف حذف شد.",show_alert=True); await admin_discounts(update,context)
+
 async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -408,11 +520,8 @@ async def create_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with conn() as c:
         row=c.execute("SELECT id,name,price,panel_id,data_limit_gb,expire_days FROM products WHERE id=? AND active=1",(pid,)).fetchone()
         if not row: await q.edit_message_text("محصول دیگر موجود نیست."); return
-        oid=c.execute("INSERT INTO orders(user_id,product_id,status) VALUES(?,?,?)",(q.from_user.id,pid,"awaiting_payment")).lastrowid
-        w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(q.from_user.id,)).fetchone()
-    name,price,gb,days=row[1],row[2],row[4] or 1,row[5] or 1; amount=int(re.sub(r"\D","",str(price)) or 0); balance=w[0] if w else 0
-    await q.edit_message_text(f"📦 سفارش #{oid}\n\nمحصول: {name}\n📦 حجم: {gb} GB\n⏳ اعتبار: {days} روز\n💰 مبلغ: {price}\n\nروش پرداخت را انتخاب کن:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 پرداخت مستقیم",callback_data=f"pay_direct:{oid}")],[InlineKeyboardButton(f"💰 پرداخت از کیف پول (موجودی {balance:,})",callback_data=f"pay_wallet:{oid}")],[InlineKeyboardButton("↩️ محصولات",callback_data="products")]]))
-
+        amount=money_int(row[2]); oid=c.execute("INSERT INTO orders(user_id,product_id,status,final_amount) VALUES(?,?,?,?)",(q.from_user.id,pid,"awaiting_payment",amount)).lastrowid
+    await show_order_payment(q,oid,q.from_user.id)
 
 async def orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -1353,11 +1462,13 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if blocked and blocked[0]: return
     flow=context.user_data.get("flow")
     if not flow: return
-    if flow.get("type") not in ("wallet_amount", "payment_photo", "support") and not is_admin(user_id): return
+    if flow.get("type") not in ("wallet_amount", "payment_photo", "support", "coupon_user") and not is_admin(user_id): return
     if flow.get("type") == "support_admin_reply" and not is_admin(user_id): return
     text=update.message.text.strip()
     if flow["type"]=="wallet_amount":
         await wallet_amount_flow(update.message,context); return
+    if flow["type"]=="coupon_user":
+        await coupon_user_flow(update.message,context); return
     if flow["type"]=="support":
         await support_user_message(update, context); return
     if flow["type"]=="support_admin_reply":
@@ -1421,6 +1532,25 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with conn() as c: c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mandatory_enabled','1')")
             context.user_data.pop("flow",None)
             await update.message.reply_text(f"✅ عضویت اجباری برای {flow['title']} فعال شد.\n\nتعداد کانال‌های اجباری: {len(channels)}",reply_markup=admin_menu()); return
+    if flow["type"]=="discount_admin":
+        step=flow.get("step")
+        if step=="value":
+            digits=text.replace(",","").replace("٬","").replace("تومان","").strip()
+            if not digits.isdigit() or int(digits)<=0 or (flow["discount_type"]=="percent" and int(digits)>100):
+                await update.message.reply_text("❌ مقدار تخفیف نامعتبر است."); return
+            flow["value"]=int(digits); flow["step"]="days"; await update.message.reply_text("⏳ کد تخفیف چند روز اعتبار داشته باشد؟\nهر 1 عدد = 1 روز.\nمثال: 30"); return
+        if step=="days":
+            if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ زمان باید عدد مثبت باشد."); return
+            flow["duration_days"]=int(text); flow["step"]="code"; await update.message.reply_text("🏷 حالا اسم/کد تخفیف را وارد کن.\nمثال: OFF20"); return
+        if step=="code":
+            code=re.sub(r"\s+","",text).upper()
+            if not re.fullmatch(r"[A-Z0-9_-]{2,40}",code): await update.message.reply_text("❌ کد فقط می‌تواند شامل حروف انگلیسی، عدد، _ و - باشد و حداقل 2 کاراکتر باشد."); return
+            expires=(datetime.utcnow()+timedelta(days=flow["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                with conn() as c: c.execute("INSERT INTO coupons(code,discount_type,value,duration_days,expires_at,active) VALUES(?,?,?,?,?,1)",(code,flow["discount_type"],flow["value"],flow["duration_days"],expires))
+            except sqlite3.IntegrityError: await update.message.reply_text("❌ این کد قبلاً ثبت شده. یک کد دیگر وارد کن."); return
+            kind="درصدی" if flow["discount_type"]=="percent" else "مبلغی"; amount=f"{flow['value']}٪" if flow["discount_type"]=="percent" else f"{flow['value']:,} تومان"
+            context.user_data.pop("flow",None); await update.message.reply_text(f"✅ کد تخفیف ساخته و ثبت شد.\n\n🏷 کد: {code}\nنوع: {kind}\nمقدار: {amount}\n⏳ اعتبار: {flow['duration_days']} روز\n📅 انقضا: {expires}",reply_markup=admin_menu()); return
     if flow["type"]=="product":
         if flow["step"]=="name":
             flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
@@ -1488,9 +1618,9 @@ async def payment_card_info(amount,kind="order"):
 
 async def pay_direct_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer(); oid=int(q.data.split(":")[1])
-    with conn() as c: row=c.execute("SELECT o.id,o.user_id,o.product_id,p.name,p.price FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?",(oid,q.from_user.id)).fetchone()
-    if not row: await q.edit_message_text("❌ سفارش پیدا نشد."); return
-    amount=int(re.sub(r"\D","",str(row[4])) or 0); info=await payment_card_info(amount,"order")
+    info_order=order_pricing(oid,q.from_user.id)
+    if not info_order: await q.edit_message_text("❌ سفارش پیدا نشد."); return
+    amount=info_order["final"]; info=await payment_card_info(amount,"order")
     if not info: await q.edit_message_text("❌ شماره کارت فروشگاه هنوز ثبت نشده."); return
     with conn() as c: payid=c.execute("INSERT INTO payments(user_id,kind,order_id,amount) VALUES(?,?,?,?)",(q.from_user.id,"order",oid,amount)).lastrowid
     context.user_data["flow"]={"type":"payment_photo","payment_id":payid}
@@ -1514,9 +1644,10 @@ async def wallet_amount_flow(message,context):
 
 async def pay_wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer(); oid=int(q.data.split(":")[1])
-    with conn() as c: row=c.execute("SELECT o.id,o.user_id,o.product_id,p.name,p.price,p.panel_id,p.data_limit_gb,p.expire_days FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?",(oid,q.from_user.id)).fetchone(); w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(q.from_user.id,)).fetchone()
-    if not row: await q.edit_message_text("❌ سفارش پیدا نشد."); return
-    amount=int(re.sub(r"\D","",str(row[4])) or 0); balance=w[0] if w else 0
+    with conn() as c: w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(q.from_user.id,)).fetchone()
+    info_order=order_pricing(oid,q.from_user.id)
+    if not info_order: await q.edit_message_text("❌ سفارش پیدا نشد."); return
+    amount=info_order["final"]; balance=w[0] if w else 0
     if balance<amount:
         card=await get_setting("card_number"); owner=await get_setting("card_owner")
         if not card or not owner: await q.edit_message_text(f"❌ موجودی کافی نیست.\nموجودی: {balance:,} تومان\nلازم: {amount:,} تومان",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💰 کیف پول",callback_data="wallet")]])); return
@@ -1527,9 +1658,9 @@ async def pay_wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def deliver_order(q,oid,uid,from_wallet=False):
-    with conn() as c: row=c.execute("SELECT o.id,o.user_id,o.product_id,p.name,p.price,p.panel_id,p.data_limit_gb,p.expire_days FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?",(oid,uid)).fetchone()
+    with conn() as c: row=c.execute("SELECT o.id,o.user_id,o.product_id,p.name,p.price,p.panel_id,p.data_limit_gb,p.expire_days,COALESCE(o.final_amount,0) FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=? AND o.user_id=?",(oid,uid)).fetchone()
     if not row: await q.edit_message_text("❌ سفارش پیدا نشد."); return False, None
-    _,_,_,name,price,panel_id,gb,days=row; amount=int(re.sub(r"\D","",str(price)) or 0)
+    _,_,_,name,price,panel_id,gb,days,final_amount=row; amount=int(final_amount or money_int(price))
     try:
         with conn() as c: pt=c.execute("SELECT panel_type,address FROM panels WHERE id=?",(panel_id,)).fetchone()
         if not pt or pt[0]!="pasarguard": raise RuntimeError("محصول باید به پنل Pasarguard متصل باشد.")
@@ -1685,8 +1816,6 @@ async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await support_start(update, context)
     elif q.data == "free_test":
         await free_test_user_start(update, context)
-    elif q.data == "coupon":
-        await q.edit_message_text("🎁 کد تخفیف\n\nفعلاً کد تخفیف فعال نیست.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]]))
 
 
 
@@ -1901,12 +2030,18 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("delete_product:"): return await delete_product(update,context)
     if data=="wallet": return await wallet(update,context)
     if data=="admin_finance": return await admin_finance(update,context)
+    if data=="admin_discounts": return await admin_discounts(update,context)
+    if data=="discount_add": return await discount_add_start(update,context)
+    if data.startswith("discount_type:"): return await discount_type_start(update,context)
+    if data=="discount_delete_list": return await discount_delete_list(update,context)
+    if data.startswith("discount_delete:"): return await discount_delete(update,context)
     if data=="finance_card": return await finance_card_start(update,context)
     if data=="finance_pending": return await finance_pending(update,context)
     if data=="finance_report": return await finance_report(update,context)
     if data=="wallet_topup": return await wallet_topup_start(update,context)
     if data.startswith("pay_direct:"): return await pay_direct_start(update,context)
     if data.startswith("pay_wallet:"): return await pay_wallet_start(update,context)
+    if data.startswith("coupon_order:"): return await coupon_order_start(update,context)
     if data.startswith("payapprove:"): return await approve_payment(update,context)
     if data.startswith("payreject:"): return await reject_payment(update,context)
     if data.startswith("service:"): return await service_detail(update,context)

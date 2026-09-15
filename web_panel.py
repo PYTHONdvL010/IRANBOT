@@ -4,6 +4,7 @@ import json
 import sqlite3
 import secrets
 import tempfile
+from datetime import datetime, timedelta
 from functools import wraps
 
 import httpx
@@ -136,6 +137,7 @@ def ensure_schema():
         c.execute("CREATE TABLE IF NOT EXISTS panel_groups(id INTEGER PRIMARY KEY AUTOINCREMENT,panel_id INTEGER NOT NULL,group_id INTEGER,group_name TEXT NOT NULL,inbound_tags TEXT DEFAULT '',UNIQUE(panel_id,group_id))")
         c.execute("CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,price TEXT NOT NULL,description TEXT DEFAULT '',panel_id INTEGER,active INTEGER DEFAULT 1,data_limit_gb INTEGER DEFAULT 1,expire_days INTEGER DEFAULT 1)")
         c.execute("CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,product_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_at DATETIME DEFAULT CURRENT_TIMESTAMP,subscription TEXT DEFAULT '',panel_username TEXT DEFAULT '')")
+        c.execute("CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT NOT NULL UNIQUE,discount_type TEXT NOT NULL,value INTEGER NOT NULL,duration_days INTEGER NOT NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,expires_at DATETIME NOT NULL,active INTEGER DEFAULT 1)")
         c.execute("CREATE TABLE IF NOT EXISTS configs(id INTEGER PRIMARY KEY AUTOINCREMENT,product_id INTEGER NOT NULL,config TEXT NOT NULL,delivered INTEGER DEFAULT 0)")
         c.execute("CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,kind TEXT NOT NULL,order_id INTEGER,amount INTEGER NOT NULL,status TEXT DEFAULT 'pending',photo_file_id TEXT,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS renewals(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,order_id INTEGER NOT NULL,full_price INTEGER NOT NULL,remaining_gb REAL DEFAULT 0,charge_gb REAL DEFAULT 0,amount INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
@@ -143,7 +145,7 @@ def ensure_schema():
         for table, columns in {
             'users': [('username',"TEXT DEFAULT ''"),('first_name',"TEXT DEFAULT ''"),('is_blocked','INTEGER DEFAULT 0'),('last_seen',"TEXT DEFAULT ''")],
             'products': [('panel_id','INTEGER'),('data_limit_gb','INTEGER DEFAULT 1'),('expire_days','INTEGER DEFAULT 1'),('active','INTEGER DEFAULT 1')],
-            'orders': [('subscription',"TEXT DEFAULT ''"),('panel_username',"TEXT DEFAULT ''")],
+            'orders': [('subscription',"TEXT DEFAULT ''"),('panel_username',"TEXT DEFAULT ''"),('discount_code',"TEXT DEFAULT ''"),('discount_amount','INTEGER DEFAULT 0'),('final_amount','INTEGER DEFAULT 0')],
         }.items():
             existing={r[1] for r in c.execute(f'PRAGMA table_info({table})').fetchall()}
             for name, definition in columns:
@@ -597,11 +599,42 @@ def backup_restore():
         except OSError: pass
     return redirect(url_for('backup'))
 
-@app.route('/discount')
+@app.route('/discount',methods=['GET','POST'])
 @admin_required
 def discount():
-    return page('<div class="card"><h2>🏷 کد تخفیف</h2><p class="muted">این بخش آماده شده، اما موتور کد تخفیف هنوز در ربات فعال نشده است.</p></div>')
+    if request.method=='POST':
+        code=re.sub(r'\s+','',request.form.get('code','')).upper()
+        dtype=request.form.get('discount_type','percent')
+        try: value=int(request.form.get('value','0') or 0)
+        except Exception: value=0
+        try: days=int(request.form.get('duration_days','0') or 0)
+        except Exception: days=0
+        if not re.fullmatch(r'[A-Z0-9_-]{2,40}',code): flash('❌ کد باید 2 تا 40 کاراکتر و فقط شامل حروف انگلیسی، عدد، _ و - باشد.')
+        elif dtype not in ('percent','amount'): flash('❌ نوع تخفیف نامعتبر است.')
+        elif value<=0 or (dtype=='percent' and value>100): flash('❌ مقدار تخفیف نامعتبر است.')
+        elif days<=0: flash('❌ مدت اعتبار باید عدد مثبت باشد.')
+        else:
+            expires=(datetime.utcnow()+timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+            try:
+                with db() as c: c.execute('INSERT INTO coupons(code,discount_type,value,duration_days,expires_at,active) VALUES(?,?,?,?,?,1)',(code,dtype,value,days,expires))
+                flash(f'✅ کد {code} ساخته شد و {days} روز اعتبار دارد.')
+            except sqlite3.IntegrityError: flash('❌ این کد قبلاً ثبت شده است.')
+        return redirect(url_for('discount'))
+    now=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    with db() as c: rows=c.execute('SELECT id,code,discount_type,value,duration_days,created_at,expires_at,active FROM coupons ORDER BY id DESC').fetchall()
+    b="""<div class='hero'><h2>🏷 کدهای تخفیف</h2><p>کدهای تخفیف فقط از سمت مدیریت ساخته می‌شوند و در منوی اصلی کاربر نمایش داده نمی‌شوند؛ کاربر هنگام ثبت سفارش می‌تواند کد را وارد کند.</p></div>
+    <div class='card'><h3>➕ افزودن کد تخفیف</h3><form method='post'><label>اسم / کد تخفیف</label><input name='code' placeholder='مثلاً OFF20' required maxlength='40'><label>نوع تخفیف</label><select name='discount_type'><option value='percent'>٪ درصدی</option><option value='amount'>💰 مبلغی (تومان)</option></select><label>درصد یا مبلغ تخفیف</label><input name='value' type='number' min='1' placeholder='مثلاً 20 یا 50000' required><label>مدت اعتبار</label><input name='duration_days' type='number' min='1' placeholder='مثلاً 30' required><p class='muted small'>هر 1 عدد = 1 روز</p><button>➕ ساخت کد تخفیف</button></form></div>
+    <div class='card'><h3>📋 کدهای ثبت‌شده</h3>{% if rows %}<div class='table-wrap'><table class='table'><tr><th>نام / کد</th><th>نوع</th><th>مقدار</th><th>مدت</th><th>تاریخ ساخت</th><th>انقضا</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td><b>{{r[1]}}</b></td><td>{{'درصدی' if r[2]=='percent' else 'مبلغی'}}</td><td>{{r[3]}}{% if r[2]=='percent' %}٪{% else %} تومان{% endif %}</td><td>{{r[4]}} روز</td><td>{{r[5]}}</td><td>{{r[6]}}</td><td><span class='badge {{'ok' if r[7] and r[6]>now else 'bad'}}'>{{'🟢 فعال' if r[7] and r[6]>now else '🔴 منقضی/غیرفعال'}}</span></td><td><form method='post' action='{{url_for('discount_delete_web')}}'><input type='hidden' name='id' value='{{r[0]}}'><button class='danger'>🗑 حذف</button></form></td></tr>{% endfor %}</table></div>{% else %}<div class='empty'>هنوز کد تخفیفی ساخته نشده.</div>{% endif %}</div>"""
+    return page(b,rows=rows,now=now)
 
+@app.route('/discount/delete',methods=['POST'])
+@admin_required
+def discount_delete_web():
+    try: rid=int(request.form.get('id','0') or 0)
+    except Exception: rid=0
+    with db() as c: c.execute('DELETE FROM coupons WHERE id=?',(rid,))
+    flash('🗑 کد تخفیف حذف شد.')
+    return redirect(url_for('discount'))
 
 def start_web_server():
     port=int(os.getenv('PORT','8080'))
