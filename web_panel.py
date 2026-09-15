@@ -15,7 +15,7 @@ DB_PATH = os.getenv('DB_PATH', 'shop.db')
 ADMIN_IDS = {int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()}
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 WEB_SECRET = os.getenv('WEB_SECRET') or secrets.token_hex(32)
-VERSION = '1.0.7'
+VERSION = '1.0.8'
 
 PANEL_TYPES = {'marzban': 'Marzban', 'pasarguard': 'Pasarguard', '3xui': '3x-ui'}
 
@@ -137,6 +137,7 @@ def ensure_schema():
         c.execute("CREATE TABLE IF NOT EXISTS panels(id INTEGER PRIMARY KEY AUTOINCREMENT,panel_type TEXT NOT NULL,name TEXT NOT NULL,address TEXT NOT NULL,username TEXT NOT NULL,password TEXT NOT NULL,status TEXT DEFAULT 'unknown',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS panel_groups(id INTEGER PRIMARY KEY AUTOINCREMENT,panel_id INTEGER NOT NULL,group_id INTEGER,group_name TEXT NOT NULL,inbound_tags TEXT DEFAULT '',UNIQUE(panel_id,group_id))")
         c.execute("CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,price TEXT NOT NULL,description TEXT DEFAULT '',panel_id INTEGER,active INTEGER DEFAULT 1,data_limit_gb INTEGER DEFAULT 1,expire_days INTEGER DEFAULT 1)")
+        c.execute("CREATE TABLE IF NOT EXISTS product_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,product_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_at DATETIME DEFAULT CURRENT_TIMESTAMP,subscription TEXT DEFAULT '',panel_username TEXT DEFAULT '')")
         c.execute("CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT NOT NULL UNIQUE,discount_type TEXT NOT NULL,value INTEGER NOT NULL,duration_days INTEGER NOT NULL,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,expires_at DATETIME NOT NULL,active INTEGER DEFAULT 1)")
         c.execute("CREATE TABLE IF NOT EXISTS configs(id INTEGER PRIMARY KEY AUTOINCREMENT,product_id INTEGER NOT NULL,config TEXT NOT NULL,delivered INTEGER DEFAULT 0)")
@@ -145,7 +146,7 @@ def ensure_schema():
         c.execute("CREATE TABLE IF NOT EXISTS free_test_settings(panel_id INTEGER PRIMARY KEY,max_tests INTEGER DEFAULT 1,data_limit_mb INTEGER DEFAULT 100,expire_hours INTEGER DEFAULT 1,enabled INTEGER DEFAULT 1)")
         for table, columns in {
             'users': [('username',"TEXT DEFAULT ''"),('first_name',"TEXT DEFAULT ''"),('is_blocked','INTEGER DEFAULT 0'),('last_seen',"TEXT DEFAULT ''")],
-            'products': [('panel_id','INTEGER'),('data_limit_gb','INTEGER DEFAULT 1'),('expire_days','INTEGER DEFAULT 1'),('active','INTEGER DEFAULT 1')],
+            'products': [('panel_id','INTEGER'),('data_limit_gb','INTEGER DEFAULT 1'),('expire_days','INTEGER DEFAULT 1'),('active','INTEGER DEFAULT 1'),('category_id','INTEGER')],
             'orders': [('subscription',"TEXT DEFAULT ''"),('panel_username',"TEXT DEFAULT ''"),('discount_code',"TEXT DEFAULT ''"),('discount_amount','INTEGER DEFAULT 0'),('final_amount','INTEGER DEFAULT 0')],
         }.items():
             existing={r[1] for r in c.execute(f'PRAGMA table_info({table})').fetchall()}
@@ -540,16 +541,82 @@ def free_test_settings_web(pid):
 @admin_required
 def products():
     if request.method=='POST':
-        try: price=int(request.form.get('price','0').replace(',','').replace('٬','')); gb=int(request.form.get('gb','1')); days=int(request.form.get('days','1')); pid=int(request.form.get('panel_id','0'))
-        except Exception: flash('❌ مقادیر عددی صحیح نیست.'); return redirect(url_for('products'))
+        try:
+            price=int(request.form.get('price','0').replace(',','').replace('٬',''))
+            gb=int(request.form.get('gb','1')); days=int(request.form.get('days','1')); pid=int(request.form.get('panel_id','0'))
+            raw_cat=request.form.get('category_id','').strip(); category_id=int(raw_cat) if raw_cat else None
+        except Exception:
+            flash('❌ مقادیر عددی صحیح نیست.'); return redirect(url_for('products'))
         name=request.form.get('name','').strip()
-        if not name or min(price,gb,days,pid)<=0: flash('❌ اطلاعات محصول ناقص است.'); return redirect(url_for('products'))
-        with db() as c: c.execute('INSERT INTO products(name,price,panel_id,data_limit_gb,expire_days,active) VALUES(?,?,?,?,?,1)',(name,f'{price:,} تومان',pid,gb,days))
+        if not name or min(price,gb,days,pid)<=0:
+            flash('❌ اطلاعات محصول ناقص است.'); return redirect(url_for('products'))
+        with db() as c:
+            if category_id is not None and not c.execute('SELECT 1 FROM product_categories WHERE id=?',(category_id,)).fetchone():
+                category_id=None
+            c.execute('INSERT INTO products(name,price,panel_id,data_limit_gb,expire_days,category_id,active) VALUES(?,?,?,?,?,?,1)',(name,f'{price:,} تومان',pid,gb,days,category_id))
         flash('✅ محصول اضافه شد.'); return redirect(url_for('products'))
     with db() as c:
-        ps=c.execute('SELECT id,name,panel_type FROM panels ORDER BY id DESC').fetchall(); rows=c.execute('SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,pa.name,p.active FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id ORDER BY p.id DESC').fetchall()
-    b='''<div class="card"><h2>➕ افزودن محصول</h2><form method="post"><div class="grid"><input name="name" placeholder="نام محصول" required><input name="price" placeholder="قیمت تومان" required><select name="panel_id" required><option value="">انتخاب پنل</option>{% for p in ps %}<option value="{{p[0]}}">#{{p[0]}} {{p[1]}} ({{p[2]}})</option>{% endfor %}</select><input name="gb" type="number" min="1" placeholder="حجم GB" required><input name="days" type="number" min="1" placeholder="مدت روز" required></div><button>➕ ثبت محصول</button></form></div><div class="card"><h2>📋 محصولات</h2><div class="table-wrap"><table class="table"><tr><th>ID</th><th>نام</th><th>قیمت</th><th>حجم</th><th>مدت</th><th>پنل</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td>{{r[3]}}GB</td><td>{{r[4]}} روز</td><td>{{r[5] or '-'}}</td><td>{{'فعال' if r[6] else 'غیرفعال'}}</td><td><form method="post" action="{{url_for('product_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div></div>'''
-    return page(b,ps=ps,rows=rows)
+        ps=c.execute('SELECT id,panel_type,name FROM panels ORDER BY id DESC').fetchall()
+        cats=c.execute('SELECT id,name FROM product_categories ORDER BY id').fetchall()
+        rows=c.execute('''SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,pa.name,p.active,COALESCE(pc.name,'بدون دسته‌بندی')
+                          FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id LEFT JOIN product_categories pc ON pc.id=p.category_id ORDER BY p.id DESC''').fetchall()
+    b='''<div class="hero"><h2>🛒 محصولات</h2><p>محصولات را بساز، ویرایش کن و در صورت نیاز به یک دسته‌بندی اختصاص بده.</p><div class="actions" style="margin-top:12px"><a class="btn blue" href="{{url_for('product_categories_web')}}">📂 مدیریت دسته‌بندی‌ها</a></div></div>
+    <div class="card"><h2>➕ افزودن محصول</h2><form method="post"><div class="grid"><input name="name" placeholder="نام محصول" required><input name="price" placeholder="قیمت تومان" required><select name="panel_id" required><option value="">انتخاب پنل</option>{% for p in ps %}<option value="{{p[0]}}">#{{p[0]}} {{p[2]}} ({{p[1]}})</option>{% endfor %}</select><input name="gb" type="number" min="1" placeholder="حجم GB" required><input name="days" type="number" min="1" placeholder="مدت روز" required><select name="category_id"><option value="">🚫 بدون دسته‌بندی</option>{% for c in cats %}<option value="{{c[0]}}">📂 {{c[1]}}</option>{% endfor %}</select></div><button>➕ ثبت محصول</button></form></div>
+    <div class="card"><h2>📋 محصولات</h2><div class="table-wrap"><table class="table"><tr><th>ID</th><th>نام</th><th>قیمت</th><th>حجم</th><th>مدت</th><th>پنل</th><th>دسته‌بندی</th><th>وضعیت</th><th></th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td>{{r[3]}}GB</td><td>{{r[4]}} روز</td><td>{{r[5] or '-'}}</td><td>📂 {{r[7]}}</td><td>{{'فعال' if r[6] else 'غیرفعال'}}</td><td><div class="actions"><a class="btn blue" href="{{url_for('product_edit_web',pid=r[0])}}">✏️ ویرایش</a><form method="post" action="{{url_for('product_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></div></td></tr>{% endfor %}</table></div>{% if not rows %}<div class="empty">هنوز محصولی ثبت نشده.</div>{% endif %}</div>'''
+    return page(b,ps=ps,cats=cats,rows=rows)
+
+@app.route('/products/edit/<int:pid>',methods=['GET','POST'])
+@admin_required
+def product_edit_web(pid):
+    with db() as c:
+        row=c.execute('SELECT id,name,price,panel_id,data_limit_gb,expire_days,category_id,active FROM products WHERE id=?',(pid,)).fetchone()
+        ps=c.execute('SELECT id,panel_type,name FROM panels ORDER BY id DESC').fetchall()
+        cats=c.execute('SELECT id,name FROM product_categories ORDER BY id').fetchall()
+    if not row:
+        flash('❌ محصول پیدا نشد.'); return redirect(url_for('products'))
+    if request.method=='POST':
+        try:
+            price=int(request.form.get('price','0').replace(',','').replace('٬','')); gb=int(request.form.get('gb','1')); days=int(request.form.get('days','1')); panel_id=int(request.form.get('panel_id','0')); active=1 if request.form.get('active')=='1' else 0
+            raw_cat=request.form.get('category_id','').strip(); category_id=int(raw_cat) if raw_cat else None
+        except Exception:
+            flash('❌ مقادیر عددی صحیح نیست.'); return redirect(url_for('product_edit_web',pid=pid))
+        name=request.form.get('name','').strip()
+        if not name or min(price,gb,days,panel_id)<=0:
+            flash('❌ اطلاعات محصول ناقص است.'); return redirect(url_for('product_edit_web',pid=pid))
+        with db() as c:
+            if category_id is not None and not c.execute('SELECT 1 FROM product_categories WHERE id=?',(category_id,)).fetchone(): category_id=None
+            c.execute('UPDATE products SET name=?,price=?,panel_id=?,data_limit_gb=?,expire_days=?,category_id=?,active=? WHERE id=?',(name,f'{price:,} تومان',panel_id,gb,days,category_id,active,pid))
+        flash(f'✅ محصول #{pid} ویرایش شد.'); return redirect(url_for('products'))
+    b='''<div class="card"><div class="row" style="justify-content:space-between"><div><h2>✏️ ویرایش محصول #{{row[0]}}</h2><p class="muted">دسته‌بندی اختیاری است.</p></div><a class="btn dark" href="{{url_for('products')}}">↩️ محصولات</a></div><form method="post"><label>نام محصول</label><input name="name" value="{{row[1]}}" required><label>قیمت تومان</label><input name="price" value="{{row[2]|replace(' تومان','')|replace(',','')}}" required><label>پنل</label><select name="panel_id" required>{% for p in ps %}<option value="{{p[0]}}" {% if row[3]==p[0] %}selected{% endif %}>#{{p[0]}} {{p[2]}} ({{p[1]}})</option>{% endfor %}</select><div class="grid"><div><label>حجم GB</label><input name="gb" type="number" min="1" value="{{row[4] or 1}}" required></div><div><label>مدت روز</label><input name="days" type="number" min="1" value="{{row[5] or 1}}" required></div><div><label>دسته‌بندی</label><select name="category_id"><option value="">🚫 بدون دسته‌بندی</option>{% for c in cats %}<option value="{{c[0]}}" {% if row[6]==c[0] %}selected{% endif %}>📂 {{c[1]}}</option>{% endfor %}</select></div></div><div class="switch"><span>فعال بودن محصول</span><input style="width:auto;margin:0" type="checkbox" name="active" value="1" {% if row[7] %}checked{% endif %}></div><button>💾 ذخیره تغییرات</button></form></div>'''
+    return page(b,row=row,ps=ps,cats=cats)
+
+@app.route('/product-categories',methods=['GET','POST'])
+@admin_required
+def product_categories_web():
+    if request.method=='POST':
+        action=request.form.get('action','create')
+        if action=='create':
+            name=request.form.get('name','').strip()
+            if not name: flash('❌ اسم دسته‌بندی را وارد کن.')
+            elif len(name)>60: flash('❌ اسم دسته‌بندی حداکثر 60 کاراکتر باشد.')
+            else:
+                try:
+                    with db() as c: c.execute('INSERT INTO product_categories(name) VALUES(?)',(name,))
+                    flash(f'✅ دسته‌بندی «{name}» ساخته شد.')
+                except sqlite3.IntegrityError: flash('❌ این دسته‌بندی قبلاً وجود دارد.')
+        elif action=='delete':
+            try: cid=int(request.form.get('id','0'))
+            except Exception: cid=0
+            with db() as c:
+                row=c.execute('SELECT name FROM product_categories WHERE id=?',(cid,)).fetchone()
+                if row:
+                    c.execute('UPDATE products SET category_id=NULL WHERE category_id=?',(cid,)); c.execute('DELETE FROM product_categories WHERE id=?',(cid,)); flash(f'🗑 دسته‌بندی «{row[0]}» حذف شد؛ محصولات آن بدون دسته‌بندی ماندند.')
+                else: flash('❌ دسته‌بندی پیدا نشد.')
+        return redirect(url_for('product_categories_web'))
+    with db() as c:
+        rows=c.execute('SELECT c.id,c.name,(SELECT COUNT(*) FROM products p WHERE p.category_id=c.id AND p.active=1) FROM product_categories c ORDER BY c.id').fetchall()
+    b='''<div class="hero"><h2>📂 دسته‌بندی محصولات</h2><p>ساخت دسته‌بندی و مشاهده تعداد محصولات هر دسته.</p><div class="actions" style="margin-top:12px"><a class="btn dark" href="{{url_for('products')}}">↩️ محصولات</a></div></div><div class="card"><h3>➕ ساخت دسته‌بندی</h3><form method="post"><input type="hidden" name="action" value="create"><label>اسم دسته‌بندی</label><input name="name" maxlength="60" placeholder="مثلاً VIP" required><button>➕ ساخت دسته‌بندی</button></form></div><div class="card"><h3>📋 دسته‌بندی‌ها</h3>{% if rows %}<div class="table-wrap"><table class="table"><tr><th>ID</th><th>نام</th><th>محصولات</th><th>عملیات</th></tr>{% for r in rows %}<tr><td>{{r[0]}}</td><td>📂 {{r[1]}}</td><td>{{r[2]}}</td><td><form method="post"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></td></tr>{% endfor %}</table></div>{% else %}<div class="empty">هنوز دسته‌بندی‌ای ساخته نشده.</div>{% endif %}</div>'''
+    return page(b,rows=rows)
 
 @app.route('/products/delete',methods=['POST'])
 @admin_required

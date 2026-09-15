@@ -41,6 +41,11 @@ def init_db():
             panel_id INTEGER,
             active INTEGER DEFAULT 1
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS product_categories(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
         c.execute("""CREATE TABLE IF NOT EXISTS orders(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -129,6 +134,8 @@ def init_db():
         cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "panel_id" not in cols:
             c.execute("ALTER TABLE products ADD COLUMN panel_id INTEGER")
+        if "category_id" not in cols:
+            c.execute("ALTER TABLE products ADD COLUMN category_id INTEGER")
         cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "data_limit_gb" not in cols:
             c.execute("ALTER TABLE products ADD COLUMN data_limit_gb INTEGER DEFAULT 1")
@@ -505,19 +512,45 @@ async def discount_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with conn() as c: c.execute("DELETE FROM coupons WHERE id=?",(rid,))
     await q.answer("کد تخفیف حذف شد.",show_alert=True); await admin_discounts(update,context)
 
-async def products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
+async def products(update: Update, context: ContextTypes.DEFAULT_TYPE, category_id=None):
+    q=update.callback_query
     await q.answer()
-    with conn() as c:
-        rows = c.execute("""SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل')
-            FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id
-            WHERE p.active=1 ORDER BY p.id""").fetchall()
-    if not rows:
-        await q.edit_message_text("🛒 فعلاً محصولی ثبت نشده.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ بازگشت", callback_data="home")]]))
+    if category_id is None:
+        with conn() as c:
+            uncategorized=c.execute("""SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل')
+                FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id
+                WHERE p.active=1 AND (p.category_id IS NULL OR p.category_id=0) ORDER BY p.id DESC""").fetchall()
+            cats=c.execute("SELECT id,name FROM product_categories ORDER BY id").fetchall()
+        buttons=[]
+        for pid,name,price,gb,days,panel in uncategorized:
+            buttons.append([InlineKeyboardButton(f"🛒 {name} — {price}",callback_data=f"product:{pid}")])
+        for cid,name in cats:
+            buttons.append([InlineKeyboardButton(f"📂 {name}",callback_data=f"category:{cid}")])
+        buttons.append([InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")])
+        if not uncategorized and not cats:
+            text="🛒 هنوز محصولی برای فروش ثبت نشده."
+        else:
+            text="🛒 خرید سرویس\n\n"
+            if uncategorized:
+                text += "محصولات بدون دسته‌بندی:\n"
+                text += "\n".join(f"• {name} — {price}" for _,name,price,*_ in uncategorized)
+                text += "\n\n"
+            text += "دسته‌بندی‌ها:" if cats else ""
+        await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
         return
-    buttons = [[InlineKeyboardButton(f"{name} — {price} | {gb or 1}GB/{days or 1}روز", callback_data=f"product:{pid}")] for pid, name, price, gb, days, panel in rows]
-    buttons.append([InlineKeyboardButton("↩️ بازگشت", callback_data="home")])
-    await q.edit_message_text("🛒 پلن موردنظرت رو انتخاب کن:", reply_markup=InlineKeyboardMarkup(buttons))
+    with conn() as c:
+        cat=c.execute("SELECT id,name FROM product_categories WHERE id=?",(category_id,)).fetchone()
+        rows=c.execute("""SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days
+            FROM products p WHERE p.active=1 AND p.category_id=? ORDER BY p.id DESC""",(category_id,)).fetchall()
+    if not cat:
+        await q.edit_message_text("❌ دسته‌بندی پیدا نشد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ محصولات",callback_data="products")]])); return
+    buttons=[[InlineKeyboardButton(f"🛒 {name} — {price}",callback_data=f"product:{pid}")] for pid,name,price,gb,days in rows]
+    buttons.append([InlineKeyboardButton("↩️ دسته‌بندی‌ها",callback_data="products")])
+    if rows:
+        text=f"📂 دسته‌بندی: {cat[1]}\n\n"+"\n".join(f"• {name} — {price}" for _,name,price,_,_ in rows)
+    else:
+        text=f"📂 دسته‌بندی: {cat[1]}\n\nاین دسته‌بندی فعلاً خالی است."
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def product(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -681,6 +714,50 @@ async def admin_user_balance_start(update: Update, context: ContextTypes.DEFAULT
     title="افزایش" if action=="add" else "کاهش"
     await q.edit_message_text(f"💰 {title} موجودی\n\nمبلغ را به تومان فقط به عدد بفرست.",reply_markup=cancel_keyboard())
 
+async def admin_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    with conn() as c:
+        rows=c.execute("SELECT c.id,c.name,(SELECT COUNT(*) FROM products p WHERE p.category_id=c.id AND p.active=1) FROM product_categories c ORDER BY c.id").fetchall()
+    buttons=[[InlineKeyboardButton("➕ ساخت دسته‌بندی",callback_data="category_add")]]
+    for cid,name,count in rows:
+        buttons.append([InlineKeyboardButton(f"📂 {name} ({count} محصول)",callback_data=f"category_admin:{cid}"),InlineKeyboardButton("🗑 حذف",callback_data=f"category_delete:{cid}")])
+    buttons.append([InlineKeyboardButton("↩️ محصولات",callback_data="admin_products")])
+    text="📂 دسته‌بندی محصولات\n\n" + ("\n".join(f"#{cid} — {name} | {count} محصول" for cid,name,count in rows) if rows else "هنوز دسته‌بندی‌ای ساخته نشده.")
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
+
+async def category_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    context.user_data["flow"]={"type":"category_admin","step":"name"}
+    await q.edit_message_text("📂 ساخت دسته‌بندی\n\nاسم دسته‌بندی را بفرست:",reply_markup=cancel_keyboard())
+
+async def category_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    try: cid=int(q.data.split(":")[1])
+    except Exception: return
+    with conn() as c:
+        row=c.execute("SELECT name FROM product_categories WHERE id=?",(cid,)).fetchone()
+        if not row:
+            await q.answer("دسته‌بندی پیدا نشد.",show_alert=True); return
+        c.execute("UPDATE products SET category_id=NULL WHERE category_id=?",(cid,))
+        c.execute("DELETE FROM product_categories WHERE id=?",(cid,))
+    await q.answer("دسته‌بندی حذف شد و محصولاتش بدون دسته‌بندی باقی ماندند.",show_alert=True)
+    await admin_categories(update,context)
+
+async def category_admin_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    cid=int(q.data.split(":")[1])
+    with conn() as c:
+        row=c.execute("SELECT name FROM product_categories WHERE id=?",(cid,)).fetchone()
+        products_rows=c.execute("SELECT id,name,price FROM products WHERE category_id=? AND active=1 ORDER BY id DESC",(cid,)).fetchall()
+    if not row:
+        await admin_categories(update,context); return
+    text=f"📂 {row[0]}\n\n"+("\n".join(f"#{i} — {n} — {pr}" for i,n,pr in products_rows) if products_rows else "این دسته‌بندی فعلاً خالی است.")
+    await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ دسته‌بندی‌ها",callback_data="admin_categories")]]))
+
 async def admin_add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
@@ -799,22 +876,22 @@ async def admin_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
     with conn() as c:
-        rows=c.execute("SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل') FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id ORDER BY p.id DESC").fetchall()
-    buttons=[]
-    for i,n,pr,gb,days,pn in rows:
+        rows=c.execute("SELECT p.id,p.name,p.price,p.data_limit_gb,p.expire_days,COALESCE(pa.name,'بدون پنل'),COALESCE(pc.name,'بدون دسته‌بندی') FROM products p LEFT JOIN panels pa ON pa.id=p.panel_id LEFT JOIN product_categories pc ON pc.id=p.category_id ORDER BY p.id DESC").fetchall()
+    buttons=[[InlineKeyboardButton("📂 مدیریت دسته‌بندی‌ها",callback_data="admin_categories")]]
+    for i,n,pr,gb,days,pn,cat in rows:
         buttons.append([InlineKeyboardButton(f"✏️ ویرایش #{i} {n}"[:55],callback_data=f"edit_product:{i}"), InlineKeyboardButton("🗑 حذف",callback_data=f"delete_product:{i}")])
     buttons.append([InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")])
-    text="📋 محصولات\n\n"+("\n".join(f"#{i} — {n}\n💰 {pr}\n📦 {gb or 1} GB | ⏳ {days or 1} روز\n🖥 {pn}" for i,n,pr,gb,days,pn in rows) if rows else "هنوز محصولی ثبت نشده.")
+    text="📋 محصولات\n\n"+("\n".join(f"#{i} — {n}\n💰 {pr}\n📦 {gb or 1} GB | ⏳ {days or 1} روز\n🖥 {pn}\n📂 {cat}" for i,n,pr,gb,days,pn,cat in rows) if rows else "هنوز محصولی ثبت نشده.")
     await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
 
 async def edit_product_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
     pid=int(q.data.split(":")[1])
-    with conn() as c: row=c.execute("SELECT id,name,price,panel_id,data_limit_gb,expire_days FROM products WHERE id=?",(pid,)).fetchone()
+    with conn() as c: row=c.execute("SELECT id,name,price,panel_id,data_limit_gb,expire_days,category_id FROM products WHERE id=?",(pid,)).fetchone()
     if not row:
         await q.edit_message_text("❌ محصول پیدا نشد.",reply_markup=admin_menu()); return
-    context.user_data["flow"]={"type":"product_edit","step":"name","product_id":pid,"panel_id":row[3]}
+    context.user_data["flow"]={"type":"product_edit","step":"name","product_id":pid,"panel_id":row[3],"category_id":row[6]}
     await q.edit_message_text(f"✏️ ویرایش محصول #{pid}\n\nنام جدید را بفرست.\nنام فعلی: {row[1]}",reply_markup=cancel_keyboard())
 
 
@@ -831,6 +908,23 @@ async def edit_product_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     flow["panel_id"]=pid; flow["step"]="gb"
     await q.edit_message_text(f"🖥 پنل جدید: {p[1]}\n\n📦 حجم جدید را فقط به عدد بفرست.",reply_markup=cancel_keyboard())
 
+
+async def edit_product_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    flow=context.user_data.get("flow",{})
+    if flow.get("type")!="product_edit":
+        await q.edit_message_text("❌ فرآیند ویرایش منقضی شده است.",reply_markup=admin_menu()); return
+    raw=q.data.split(":",1)[1]
+    cid=None if raw=="none" else int(raw)
+    if cid is not None:
+        with conn() as c:
+            if not c.execute("SELECT 1 FROM product_categories WHERE id=?",(cid,)).fetchone():
+                await q.answer("دسته‌بندی پیدا نشد.",show_alert=True); return
+    flow["category_id"]=cid
+    with conn() as c: c.execute("UPDATE products SET name=?,price=?,panel_id=?,data_limit_gb=?,expire_days=?,category_id=? WHERE id=?",(flow["name"],flow["price"],flow["panel_id"],flow["data_limit_gb"],flow["expire_days"],cid,flow["product_id"]))
+    context.user_data.pop("flow",None)
+    await q.edit_message_text(f"✅ محصول #{flow['product_id']} ویرایش شد.",reply_markup=admin_menu())
 
 async def delete_product(update,context):
     q=update.callback_query; await q.answer()
@@ -1697,6 +1791,17 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if flow['type']=='raffle_admin': c.execute("UPDATE raffles SET status='closed' WHERE status='active'"); rid=c.execute("INSERT INTO raffles(prize_type,prize_name,prize_amount,entry_fee,max_participants,status) VALUES(?,?,?,?,?,'active')",(flow['prize_type'],flow.get('prize_name',''),flow['prize_amount'],flow.get('entry_fee',0),flow['max_participants'])).lastrowid
                 else: c.execute("UPDATE raffles SET prize_type=?,prize_name=?,prize_amount=?,entry_fee=?,max_participants=? WHERE id=?",(flow['prize_type'],flow.get('prize_name',''),flow['prize_amount'],flow.get('entry_fee',0),flow['max_participants'],flow['raffle_id'])); rid=flow.get('raffle_id')
             context.user_data.pop('flow',None); await update.message.reply_text(f"✅ قرعه‌کشی #{rid} {'ساخته و فعال شد' if flow['type']=='raffle_admin' else 'ویرایش شد'}.",reply_markup=admin_menu()); return
+    if flow["type"]=="category_admin":
+        name=text.strip()
+        if not name:
+            await update.message.reply_text("❌ اسم دسته‌بندی نمی‌تواند خالی باشد.",reply_markup=cancel_keyboard()); return
+        if len(name)>60:
+            await update.message.reply_text("❌ اسم دسته‌بندی خیلی طولانی است. حداکثر 60 کاراکتر.",reply_markup=cancel_keyboard()); return
+        try:
+            with conn() as c: cid=c.execute("INSERT INTO product_categories(name) VALUES(?)",(name,)).lastrowid
+        except sqlite3.IntegrityError:
+            await update.message.reply_text("❌ این دسته‌بندی قبلاً ساخته شده است.",reply_markup=cancel_keyboard()); return
+        context.user_data.pop("flow",None); await update.message.reply_text(f"✅ دسته‌بندی «{name}» ساخته شد.",reply_markup=admin_menu()); return
     if flow["type"]=="product_edit":
         if flow["step"]=="name":
             if not text: await update.message.reply_text("❌ نام نمی‌تواند خالی باشد."); return
@@ -1712,9 +1817,12 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             flow["data_limit_gb"]=int(text); flow["step"]="days"; await update.message.reply_text("⏳ مدت جدید را به روز بفرست."); return
         if flow["step"]=="days":
             if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ مدت باید عدد مثبت باشد."); return
-            flow["expire_days"]=int(text)
-            with conn() as c: c.execute("UPDATE products SET name=?,price=?,panel_id=?,data_limit_gb=?,expire_days=? WHERE id=?",(flow["name"],flow["price"],flow["panel_id"],flow["data_limit_gb"],flow["expire_days"],flow["product_id"]))
-            context.user_data.pop("flow",None); await update.message.reply_text(f"✅ محصول #{flow['product_id']} ویرایش شد.",reply_markup=admin_menu()); return
+            flow["expire_days"]=int(text); flow["step"]="category"
+            with conn() as c: cats=c.execute("SELECT id,name FROM product_categories ORDER BY id").fetchall()
+            buttons=[[InlineKeyboardButton("🚫 بدون دسته‌بندی",callback_data="edit_product_category:none")]]+[ [InlineKeyboardButton(f"📂 {cid} {name}",callback_data=f"edit_product_category:{cid}")] for cid,name in cats ]
+            await update.message.reply_text("📂 دسته‌بندی محصول را انتخاب کن یا بدون دسته‌بندی بگذار:",reply_markup=InlineKeyboardMarkup(buttons)); return
+        if flow["step"]=="category":
+            return
     if flow["type"]=="product":
         if flow["step"]=="name":
             flow["name"]=text; flow["step"]="price"; await update.message.reply_text("💰 قیمت محصول را به تومان ارسال کن.\nمثال: 250000"); return
@@ -1740,9 +1848,10 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         flow["data_limit_gb"]=int(text); flow["step"]="days"; await update.message.reply_text("⏳ زمان را فقط به عدد وارد کن. هر 1 عدد = 1 روز."); return
     if flow["type"]=="product" and flow.get("step")=="days":
         if not text.isdigit() or int(text)<=0: await update.message.reply_text("❌ زمان باید عدد مثبت باشد."); return
-        flow["expire_days"]=int(text)
-        with conn() as c: pid=c.execute("INSERT INTO products(name,price,panel_id,data_limit_gb,expire_days) VALUES(?,?,?,?,?)",(flow["name"],flow["price"],flow["panel_id"],flow["data_limit_gb"],flow["expire_days"])).lastrowid
-        context.user_data.pop("flow",None); await update.message.reply_text(f"✅ محصول #{pid} اضافه شد.\n\nنام: {flow['name']}\nقیمت: {flow['price']}\n🖥 پنل: #{flow['panel_id']}\n📦 حجم: {flow['data_limit_gb']} GB\n⏳ زمان: {flow['expire_days']} روز",reply_markup=admin_menu()); return
+        flow["expire_days"]=int(text); flow["step"]="category"
+        with conn() as c: cats=c.execute("SELECT id,name FROM product_categories ORDER BY id").fetchall()
+        buttons=[[InlineKeyboardButton("🚫 بدون دسته‌بندی",callback_data="product_category:none")]]+[ [InlineKeyboardButton(f"📂 {cid} {name}",callback_data=f"product_category:{cid}")] for cid,name in cats ]
+        await update.message.reply_text("📂 دسته‌بندی محصول را انتخاب کن یا بدون دسته‌بندی بگذار:",reply_markup=InlineKeyboardMarkup(buttons)); return
     if flow["type"]=="panel_edit":
         if flow["step"]=="name":
             if not text: await update.message.reply_text("❌ نام نمی‌تواند خالی باشد."); return
@@ -1778,6 +1887,26 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result is True: context.user_data.pop("flow",None)
         return
 
+
+async def select_product_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    flow=context.user_data.get("flow",{})
+    if flow.get("type")!="product" or flow.get("step")!="category":
+        await q.edit_message_text("❌ فرآیند افزودن محصول منقضی شده است.",reply_markup=admin_menu()); return
+    raw=q.data.split(":",1)[1]
+    cid=None if raw=="none" else int(raw)
+    if cid is not None:
+        with conn() as c:
+            if not c.execute("SELECT 1 FROM product_categories WHERE id=?",(cid,)).fetchone():
+                await q.answer("دسته‌بندی پیدا نشد.",show_alert=True); return
+    with conn() as c:
+        pid=c.execute("INSERT INTO products(name,price,panel_id,data_limit_gb,expire_days,category_id) VALUES(?,?,?,?,?,?)",(flow["name"],flow["price"],flow["panel_id"],flow["data_limit_gb"],flow["expire_days"],cid)).lastrowid
+    cat='بدون دسته‌بندی'
+    if cid is not None:
+        with conn() as c: cat=c.execute("SELECT name FROM product_categories WHERE id=?",(cid,)).fetchone()[0]
+    context.user_data.pop("flow",None)
+    await q.edit_message_text(f"✅ محصول #{pid} اضافه شد.\n\nنام: {flow['name']}\nقیمت: {flow['price']}\n🖥 پنل: #{flow['panel_id']}\n📦 حجم: {flow['data_limit_gb']} GB\n⏳ زمان: {flow['expire_days']} روز\n📂 دسته‌بندی: {cat}",reply_markup=admin_menu())
 
 async def select_product_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -2322,6 +2451,13 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("test_group:"): return await test_group(update,context)
     if data.startswith("product_panel:"): return await select_product_panel(update,context)
     if data=="admin_products": return await admin_products(update,context)
+    if data=="admin_categories": return await admin_categories(update,context)
+    if data=="category_add": return await category_add_start(update,context)
+    if data.startswith("category_delete:"): return await category_delete(update,context)
+    if data.startswith("category_admin:"): return await category_admin_detail(update,context)
+    if data.startswith("category:"): return await products(update,context,category_id=int(data.split(":")[1]))
+    if data.startswith("product_category:"): return await select_product_category(update,context)
+    if data.startswith("edit_product_category:"): return await edit_product_category(update,context)
     if data=="admin_orders": return await admin_orders(update,context)
     if data=="admin_backup": return await admin_backup(update,context)
     if data=="backup_create": return await admin_backup_create(update,context)
@@ -2360,10 +2496,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def wrap_membership(fn):
-    async def wrapped(update, context):
+    async def wrapped(update, context, *args, **kwargs):
         if not await membership_gate(update, context):
             return
-        return await fn(update, context)
+        return await fn(update, context, *args, **kwargs)
     return wrapped
 
 
