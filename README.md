@@ -495,6 +495,12 @@ DB_PATH=/app/data/shop.db
 
 # ☁️ نصب روی Railway
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/xX2gKW?referralCode=RL7ALm&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
+> 🚀 **نصب سریع با دکمه بالا:** با زدن دکمه **Deploy on Railway** مستقیماً وارد صفحه Deploy پروژه در Railway می‌شوید و می‌توانید مراحل نصب را سریع‌تر انجام دهید.
+>
+> 🛠️ **نصب دستی:** اگر نخواستید از دکمه بالا استفاده کنید، مراحل پایین را به‌صورت دستی انجام دهید؛ یعنی Repository را Fork کنید، در Railway پروژه بسازید، Volume و Environment Variables را تنظیم کنید و سپس Deploy بگیرید.
+
 ## مرحله 1 — Fork کردن پروژه
 
 اگر پروژه روی GitHub قرار دارد:
