@@ -117,6 +117,15 @@ def init_db():
             user_id INTEGER NOT NULL, panel_id INTEGER NOT NULL, used_count INTEGER DEFAULT 0,
             PRIMARY KEY(user_id, panel_id)
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS raffles(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, prize_type TEXT NOT NULL, prize_name TEXT DEFAULT '',
+            prize_amount INTEGER DEFAULT 0, entry_fee INTEGER DEFAULT 0, max_participants INTEGER DEFAULT 30,
+            status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS raffle_participants(
+            raffle_id INTEGER NOT NULL, user_id INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(raffle_id,user_id)
+        )""")
         cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "panel_id" not in cols:
             c.execute("ALTER TABLE products ADD COLUMN panel_id INTEGER")
@@ -1670,6 +1679,24 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except sqlite3.IntegrityError: await update.message.reply_text("❌ این کد قبلاً ثبت شده. یک کد دیگر وارد کن."); return
             kind="درصدی" if flow["discount_type"]=="percent" else "مبلغی"; amount=f"{flow['value']}٪" if flow["discount_type"]=="percent" else f"{flow['value']:,} تومان"
             context.user_data.pop("flow",None); await update.message.reply_text(f"✅ کد تخفیف ساخته و ثبت شد.\n\n🏷 کد: {code}\nنوع: {kind}\nمقدار: {amount}\n⏳ اعتبار: {flow['duration_days']} روز\n📅 انقضا: {expires}",reply_markup=admin_menu()); return
+    if flow["type"] in ("raffle_admin","raffle_edit"):
+        step=flow.get('step'); digits=text.replace(',','').replace('٬','').replace('تومان','').strip()
+        if step=='fee':
+            if not digits.isdigit() or int(digits)<0: await update.message.reply_text("❌ مبلغ باید عدد 0 یا مثبت باشد."); return
+            flow['entry_fee']=int(digits); flow['step']='prize_amount'; await update.message.reply_text("💰 مبلغ/ارزش جایزه را به تومان وارد کن:"); return
+        if step=='name':
+            if not text: await update.message.reply_text("❌ اسم جایزه نمی‌تواند خالی باشد."); return
+            flow['prize_name']=text; flow['step']='prize_amount'; await update.message.reply_text("💰 مبلغ/ارزش جایزه را به تومان وارد کن:"); return
+        if step=='prize_amount':
+            if not digits.isdigit() or int(digits)<0: await update.message.reply_text("❌ مبلغ باید عدد 0 یا مثبت باشد."); return
+            flow['prize_amount']=int(digits); flow['prize_type']='money' if not flow.get('prize_name') else 'item'; flow['step']='limit'; await update.message.reply_text("👥 چند کاربر اجازه ثبت‌نام داشته باشند؟\nحداکثر 30 نفر."); return
+        if step=='limit':
+            if not digits.isdigit() or not 1<=int(digits)<=30: await update.message.reply_text("❌ تعداد باید بین 1 تا 30 نفر باشد."); return
+            flow['max_participants']=int(digits)
+            with conn() as c:
+                if flow['type']=='raffle_admin': c.execute("UPDATE raffles SET status='closed' WHERE status='active'"); rid=c.execute("INSERT INTO raffles(prize_type,prize_name,prize_amount,entry_fee,max_participants,status) VALUES(?,?,?,?,?,'active')",(flow['prize_type'],flow.get('prize_name',''),flow['prize_amount'],flow.get('entry_fee',0),flow['max_participants'])).lastrowid
+                else: c.execute("UPDATE raffles SET prize_type=?,prize_name=?,prize_amount=?,entry_fee=?,max_participants=? WHERE id=?",(flow['prize_type'],flow.get('prize_name',''),flow['prize_amount'],flow.get('entry_fee',0),flow['max_participants'],flow['raffle_id'])); rid=flow.get('raffle_id')
+            context.user_data.pop('flow',None); await update.message.reply_text(f"✅ قرعه‌کشی #{rid} {'ساخته و فعال شد' if flow['type']=='raffle_admin' else 'ویرایش شد'}.",reply_markup=admin_menu()); return
     if flow["type"]=="product_edit":
         if flow["step"]=="name":
             if not text: await update.message.reply_text("❌ نام نمی‌تواند خالی باشد."); return
@@ -1855,7 +1882,7 @@ async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYP
     if not row: await update.message.reply_text("❌ پرداخت پیدا نشد."); return
     pid,uid,kind,oid,amount=row
     await update.message.reply_text("✅ رسید دریافت شد. بعد از تأیید ادمین نتیجه اعلام می‌شود.",reply_markup=menu(uid))
-    label={"order":"🛒 خرید سرویس","wallet_topup":"💰 شارژ کیف پول","wallet_topup_for_order":"💰 شارژ برای خرید","renewal":"🔄 تمدید سرویس"}.get(kind,kind)
+    label={"order":"🛒 خرید سرویس","wallet_topup":"💰 شارژ کیف پول","wallet_topup_for_order":"💰 شارژ برای خرید","renewal":"🔄 تمدید سرویس","raffle":"🎟 ثبت‌نام قرعه‌کشی"}.get(kind,kind)
     cap=f"💳 رسید #{pid}\n\nنوع: {label}\n👤 User ID: {uid}\n💰 مبلغ: {amount:,} تومان"+(f"\n📦 سفارش: #{oid}" if oid else "")
     kb=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تأیید",callback_data=f"payapprove:{pid}"),InlineKeyboardButton("❌ رد",callback_data=f"payreject:{pid}")]])
     for aid in ADMIN_IDS:
@@ -1871,6 +1898,15 @@ async def approve_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not row: await q.edit_message_caption(caption="❌ پرداخت پیدا نشد."); return
     _,uid,kind,oid,amount,status=row
     if status!="pending": await q.edit_message_caption(caption=f"ℹ️ قبلاً پردازش شده: {status}"); return
+    if kind=="raffle":
+        with conn() as c:
+            r=c.execute("SELECT status,max_participants FROM raffles WHERE id=?",(oid,)).fetchone(); count=c.execute("SELECT COUNT(*) FROM raffle_participants WHERE raffle_id=?",(oid,)).fetchone()[0]
+            if not r or r[0]!='active' or count>=r[1]: await q.edit_message_caption(caption="❌ ظرفیت تکمیل شده یا قرعه‌کشی فعال نیست."); return
+            c.execute("UPDATE payments SET status='approved' WHERE id=?",(payid,)); c.execute("INSERT OR IGNORE INTO raffle_participants(raffle_id,user_id) VALUES(?,?)",(oid,uid))
+        await q.edit_message_caption(caption=f"✅ ثبت‌نام قرعه‌کشی #{oid} تأیید شد.")
+        try: await context.bot.send_message(uid,"🎉 پرداخت تأیید شد و با موفقیت در قرعه‌کشی ثبت‌نام شد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎟 قرعه‌کشی",callback_data="raffle")]]))
+        except Exception: pass
+        return
     if kind=="wallet_topup":
         with conn() as c: c.execute("UPDATE payments SET status='approved' WHERE id=?",(payid,)); c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)",(uid,)); c.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?",(amount,uid))
         await q.edit_message_caption(caption=f"✅ شارژ #{payid} تأیید شد. +{amount:,} تومان")
@@ -1961,23 +1997,98 @@ async def support_admin_reply(message, context):
 
 
 async def raffle_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.edit_message_text(
-        "🎟 قرعه‌کشی\n\n⏳ این بخش در حال ساخت هست و به‌زودی فعال می‌شود.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]])
-    )
+    q=update.callback_query; await q.answer()
+    with conn() as c: r=c.execute("SELECT id,prize_type,prize_name,prize_amount,entry_fee,max_participants,(SELECT COUNT(*) FROM raffle_participants WHERE raffle_id=raffles.id) FROM raffles WHERE status='active' ORDER BY id DESC LIMIT 1").fetchone()
+    if not r:
+        await q.edit_message_text("🎟 قرعه‌کشی\n\n❌ ادمین هنوز قرعه‌کشی نگذاشته است.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]])); return
+    rid,ptype,pname,pamount,fee,limit,count=r
+    prize=(f"💰 جایزه نقدی: {pamount:,} تومان" if ptype=='money' else f"🎁 جایزه: {pname}\n💰 ارزش جایزه: {pamount:,} تومان")
+    fee_text=f"💳 هزینه ثبت‌نام: {fee:,} تومان" if fee>0 else "🆓 ثبت‌نام: رایگان"
+    await q.edit_message_text(f"🎟 قرعه‌کشی\n\n{prize}\n{fee_text}\n👥 ظرفیت: {count}/{limit} نفر\n\nبرای شرکت روی دکمه زیر بزن.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎟 ثبت‌نام در قرعه‌کشی",callback_data=f"raffle_join:{rid}")],[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
 
+async def raffle_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); rid=int(q.data.split(':')[1]); uid=q.from_user.id
+    with conn() as c:
+        r=c.execute("SELECT id,entry_fee,max_participants,status FROM raffles WHERE id=?",(rid,)).fetchone(); exists=c.execute("SELECT 1 FROM raffle_participants WHERE raffle_id=? AND user_id=?",(rid,uid)).fetchone(); count=c.execute("SELECT COUNT(*) FROM raffle_participants WHERE raffle_id=?",(rid,)).fetchone()[0]
+    if not r or r[3]!='active': await q.edit_message_text("❌ این قرعه‌کشی دیگر فعال نیست."); return
+    if exists: await q.answer("قبلاً ثبت‌نام کردی.",show_alert=True); return
+    if count>=r[2]: await q.answer("ظرفیت تکمیل شده است.",show_alert=True); return
+    fee=r[1]
+    if fee>0:
+        with conn() as c: w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(uid,)).fetchone()
+        bal=w[0] if w else 0
+        await q.edit_message_text(f"🎟 ثبت‌نام قرعه‌کشی\n\n💰 هزینه: {fee:,} تومان\n\nروش پرداخت را انتخاب کن:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 پرداخت مستقیم",callback_data=f"raffle_direct:{rid}")],[InlineKeyboardButton(f"💰 پرداخت از کیف پول ({bal:,})",callback_data=f"raffle_wallet:{rid}")],[InlineKeyboardButton("↩️ قرعه‌کشی",callback_data="raffle")]])); return
+    with conn() as c: c.execute("INSERT OR IGNORE INTO raffle_participants(raffle_id,user_id) VALUES(?,?)",(rid,uid))
+    await q.edit_message_text("🎉 با موفقیت در قرعه‌کشی ثبت‌نام شدی!",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
+
+async def raffle_direct(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); rid=int(q.data.split(':')[1]); uid=q.from_user.id
+    with conn() as c: r=c.execute("SELECT entry_fee,max_participants,status FROM raffles WHERE id=?",(rid,)).fetchone(); count=c.execute("SELECT COUNT(*) FROM raffle_participants WHERE raffle_id=?",(rid,)).fetchone()[0]
+    if not r or r[2]!='active' or count>=r[1]: await q.edit_message_text("❌ قرعه‌کشی فعال نیست یا ظرفیت تکمیل شده."); return
+    info=await payment_card_info(r[0],'order')
+    if not info: await q.edit_message_text("❌ شماره کارت فروشگاه هنوز ثبت نشده."); return
+    with conn() as c: payid=c.execute("INSERT INTO payments(user_id,kind,order_id,amount) VALUES(?,?,?,?)",(uid,'raffle',rid,r[0])).lastrowid
+    context.user_data['flow']={'type':'payment_photo','payment_id':payid}; await q.edit_message_text(info.replace('💳 پرداخت سفارش','🎟 پرداخت ثبت‌نام قرعه‌کشی'),reply_markup=user_cancel_keyboard())
+
+async def raffle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer(); rid=int(q.data.split(':')[1]); uid=q.from_user.id
+    with conn() as c: r=c.execute("SELECT entry_fee,max_participants,status FROM raffles WHERE id=?",(rid,)).fetchone(); w=c.execute("SELECT balance FROM wallets WHERE user_id=?",(uid,)).fetchone(); count=c.execute("SELECT COUNT(*) FROM raffle_participants WHERE raffle_id=?",(rid,)).fetchone()[0]
+    if not r or r[2]!='active' or count>=r[1]: await q.edit_message_text("❌ قرعه‌کشی فعال نیست یا ظرفیت تکمیل شده."); return
+    fee=r[0]; bal=w[0] if w else 0
+    if bal<fee: await q.answer("موجودی کیف پول کافی نیست.",show_alert=True); return
+    with conn() as c: c.execute("UPDATE wallets SET balance=balance-? WHERE user_id=?",(fee,uid)); c.execute("INSERT INTO payments(user_id,kind,order_id,amount,status) VALUES(?,?,?,?,?)",(uid,'raffle_wallet',rid,fee,'approved')); c.execute("INSERT OR IGNORE INTO raffle_participants(raffle_id,user_id) VALUES(?,?)",(rid,uid))
+    await q.edit_message_text("🎉 ثبت‌نام با موفقیت انجام شد و مبلغ از کیف پول کم شد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی",callback_data="home")]]))
 
 async def admin_raffle_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if not is_admin(q.from_user.id):
-        return
-    await q.edit_message_text(
-        "🎟 مدیریت قرعه‌کشی\n\n⏳ این بخش در حال ساخت هست و به‌زودی فعال می‌شود.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ پنل مدیریت", callback_data="admin")]])
-    )
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    with conn() as c: r=c.execute("SELECT id,prize_type,prize_name,prize_amount,entry_fee,max_participants,status,(SELECT COUNT(*) FROM raffle_participants WHERE raffle_id=raffles.id) FROM raffles ORDER BY id DESC LIMIT 1").fetchone()
+    if not r: text="🎟 مدیریت قرعه‌کشی\n\nهنوز قرعه‌کشی ساخته نشده."; buttons=[[InlineKeyboardButton("➕ ساخت قرعه‌کشی",callback_data="raffle_add")]]
+    else:
+        rid,ptype,pname,pamount,fee,limit,status,count=r; prize=f"💰 {pamount:,} تومان" if ptype=='money' else f"🎁 {pname} | ارزش: {pamount:,} تومان"; text=f"🎟 قرعه‌کشی #{rid}\n\n{prize}\n💳 هزینه ورود: {fee:,} تومان\n👥 ظرفیت: {count}/{limit}\n📌 وضعیت: {status}"; buttons=[[InlineKeyboardButton("✏️ ویرایش",callback_data=f"raffle_edit:{rid}"),InlineKeyboardButton("🗑 حذف",callback_data=f"raffle_delete:{rid}")],[InlineKeyboardButton("▶️ شروع قرعه‌کشی",callback_data=f"raffle_start:{rid}")],[InlineKeyboardButton("➕ ساخت جدید",callback_data="raffle_add")]]
+    buttons.append([InlineKeyboardButton("↩️ پنل مدیریت",callback_data="admin")]); await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(buttons))
+
+async def raffle_add_start(update, context):
+    q=update.callback_query; await q.answer();
+    if not is_admin(q.from_user.id): return
+    context.user_data['flow']={'type':'raffle_admin','step':'paid'}
+    await q.edit_message_text("🎟 برای ثبت‌نام پول بگیرم؟",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ بله",callback_data="raffle_paid:yes"),InlineKeyboardButton("❌ نه",callback_data="raffle_paid:no")],[InlineKeyboardButton("لغو",callback_data="admin")]]))
+
+async def raffle_paid_start(update, context):
+    q=update.callback_query; await q.answer();
+    if not is_admin(q.from_user.id): return
+    flow=context.user_data.get('flow',{}); flow['entry_paid']=q.data.endswith(':yes'); flow['step']='fee' if flow['entry_paid'] else 'name'; context.user_data['flow']=flow
+    await q.edit_message_text("💰 مبلغ ثبت‌نام را به تومان وارد کن:" if flow['entry_paid'] else "🎁 اسم جایزه را وارد کن:")
+
+async def raffle_edit_start(update, context):
+    q=update.callback_query; await q.answer();
+    if not is_admin(q.from_user.id): return
+    rid=int(q.data.split(':')[1]);
+    with conn() as c: r=c.execute("SELECT prize_type,prize_name,prize_amount,entry_fee,max_participants FROM raffles WHERE id=?",(rid,)).fetchone()
+    if not r: await q.edit_message_text("❌ قرعه‌کشی پیدا نشد.",reply_markup=admin_menu()); return
+    context.user_data['flow']={'type':'raffle_edit','step':'fee','raffle_id':rid,'entry_paid':r[3]>0,'prize_type':r[0],'prize_name':r[1],'prize_amount':r[2],'max_participants':r[4]}; await q.edit_message_text(f"✏️ ویرایش #{rid}\n\nمبلغ ثبت‌نام جدید را وارد کن. برای رایگان 0 بفرست:")
+
+async def raffle_delete(update, context):
+    q=update.callback_query; await q.answer();
+    if not is_admin(q.from_user.id): return
+    rid=int(q.data.split(':')[1]);
+    with conn() as c: c.execute('DELETE FROM raffle_participants WHERE raffle_id=?',(rid,)); c.execute('DELETE FROM raffles WHERE id=?',(rid,))
+    await q.edit_message_text("🗑 قرعه‌کشی حذف شد.",reply_markup=admin_menu())
+
+async def raffle_start(update, context):
+    q=update.callback_query; await q.answer('در حال انتخاب...');
+    if not is_admin(q.from_user.id): return
+    rid=int(q.data.split(':')[1]);
+    with conn() as c: r=c.execute("SELECT prize_type,prize_name,prize_amount,status FROM raffles WHERE id=?",(rid,)).fetchone(); rows=c.execute("SELECT user_id FROM raffle_participants WHERE raffle_id=?",(rid,)).fetchall()
+    if not r or r[3]!='active': await q.edit_message_text('❌ این قرعه‌کشی فعال نیست.',reply_markup=admin_menu()); return
+    if not rows: await q.answer('شرکت‌کننده‌ای ثبت نشده.',show_alert=True); return
+    import random
+    winner=random.choice(rows)[0]
+    with conn() as c: c.execute("UPDATE raffles SET status='drawn' WHERE id=?",(rid,)); c.execute("DELETE FROM raffle_participants WHERE raffle_id=?",(rid,))
+    prize=f"{r[1]}" if r[0]!='money' else f"{r[2]:,} تومان"
+    try: await context.bot.send_message(winner,f"🎉 برنده شدی!\n\n🎟 قرعه‌کشی #{rid}\n🎁 جایزه: {prize}\n\nبرووووو تو PV ادمین 😄")
+    except Exception: pass
+    await q.edit_message_text(f"🎉 قرعه‌کشی انجام شد!\n\n🏆 برنده: {winner}\n🎁 جایزه: {prize}\n\nبخش قرعه‌کشی حذف شد.",reply_markup=admin_menu())
 
 
 async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2175,6 +2286,14 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data=="admin": return await admin_panel(update,context)
     if data=="raffle": return await raffle_placeholder(update,context)
     if data=="admin_raffle": return await admin_raffle_placeholder(update,context)
+    if data=="raffle_add": return await raffle_add_start(update,context)
+    if data.startswith("raffle_paid:"): return await raffle_paid_start(update,context)
+    if data.startswith("raffle_join:"): return await raffle_join(update,context)
+    if data.startswith("raffle_direct:"): return await raffle_direct(update,context)
+    if data.startswith("raffle_wallet:"): return await raffle_wallet(update,context)
+    if data.startswith("raffle_edit:"): return await raffle_edit_start(update,context)
+    if data.startswith("raffle_delete:"): return await raffle_delete(update,context)
+    if data.startswith("raffle_start:"): return await raffle_start(update,context)
     if data=="admin_users": return await admin_users(update,context)
     if data.startswith("admin_user:"): return await admin_user_detail(update,context)
     if data.startswith("user_toggle_block:"): return await admin_user_toggle_block(update,context)
