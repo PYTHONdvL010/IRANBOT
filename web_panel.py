@@ -20,6 +20,16 @@ PANEL_TYPES = {'marzban': 'Marzban', 'pasarguard': 'Pasarguard', '3xui': '3x-ui'
 app = Flask(__name__)
 app.secret_key = WEB_SECRET
 
+
+def money_filter(value):
+    try:
+        return f"{int(float(value or 0)):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+app.jinja_env.filters['money'] = money_filter
+
 BASE = '''
 <!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>IRANBOT — Admin</title>
@@ -362,15 +372,15 @@ def finance_report_web():
         recent=c.execute("SELECT id,user_id,kind,order_id,amount,status,created_at FROM payments ORDER BY id DESC LIMIT 30").fetchall()
     b='''<div class="hero"><h2>📊 گزارش مالی</h2><p>نمایش دقیق واریزی رسیدها، شارژ کیف پول، خرید مستقیم، خرید از کیف پول، تمدیدها و پول آماده داخل کیف پول کاربران.</p></div>
     <div class="grid">
-      <div class="statcard"><div class="staticon">💰</div><div class="statlabel">کل واریزی رسیدهای تأییدشده</div><div class="stat">{{approved[0]|int|format:,}} تومان</div><div class="kpi">{{approved[1]}} رسید</div></div>
-      <div class="statcard"><div class="staticon">💳</div><div class="statlabel">شارژ کیف پول</div><div class="stat">{{topups[0]|int|format:,}} تومان</div><div class="kpi">{{topups[1]}} مورد</div></div>
-      <div class="statcard"><div class="staticon">🛒</div><div class="statlabel">خرید مستقیم</div><div class="stat">{{direct[0]|int|format:,}} تومان</div><div class="kpi">{{direct[1]}} مورد</div></div>
-      <div class="statcard"><div class="staticon">👛</div><div class="statlabel">خرید از کیف پول</div><div class="stat">{{wallet_buy[0]|int|format:,}} تومان</div><div class="kpi">{{wallet_buy[1]}} مورد</div></div>
-      <div class="statcard"><div class="staticon">🔄</div><div class="statlabel">تمدید سرویس</div><div class="stat">{{renew[0]|int|format:,}} تومان</div><div class="kpi">{{renew[1]}} مورد</div></div>
-      <div class="statcard"><div class="staticon">💵</div><div class="statlabel">پول آماده در کیف پول کاربران</div><div class="stat">{{wallet_total|int|format:,}} تومان</div><div class="kpi">موجودی فعلی کاربران</div></div>
-      <div class="statcard"><div class="staticon">⏳</div><div class="statlabel">پرداخت‌های در انتظار</div><div class="stat">{{pending[0]|int|format:,}} تومان</div><div class="kpi">{{pending[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">💰</div><div class="statlabel">کل واریزی رسیدهای تأییدشده</div><div class="stat">{{approved[0]|money}} تومان</div><div class="kpi">{{approved[1]}} رسید</div></div>
+      <div class="statcard"><div class="staticon">💳</div><div class="statlabel">شارژ کیف پول</div><div class="stat">{{topups[0]|money}} تومان</div><div class="kpi">{{topups[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">🛒</div><div class="statlabel">خرید مستقیم</div><div class="stat">{{direct[0]|money}} تومان</div><div class="kpi">{{direct[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">👛</div><div class="statlabel">خرید از کیف پول</div><div class="stat">{{wallet_buy[0]|money}} تومان</div><div class="kpi">{{wallet_buy[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">🔄</div><div class="statlabel">تمدید سرویس</div><div class="stat">{{renew[0]|money}} تومان</div><div class="kpi">{{renew[1]}} مورد</div></div>
+      <div class="statcard"><div class="staticon">💵</div><div class="statlabel">پول آماده در کیف پول کاربران</div><div class="stat">{{wallet_total|money}} تومان</div><div class="kpi">موجودی فعلی کاربران</div></div>
+      <div class="statcard"><div class="staticon">⏳</div><div class="statlabel">پرداخت‌های در انتظار</div><div class="stat">{{pending[0]|money}} تومان</div><div class="kpi">{{pending[1]}} مورد</div></div>
     </div>
-    <div class="card"><h3>🧾 آخرین تراکنش‌ها</h3><div class="table-wrap"><table class="table"><tr><th>ID</th><th>User</th><th>نوع</th><th>Order</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr>{% for r in recent %}<tr><td>#{{r[0]}}</td><td>{{r[1]}}</td><td>{{labels.get(r[2],r[2])}}</td><td>{{r[3] or '-'}}</td><td>{{r[4]|int|format:,}} تومان</td><td><span class="badge {{'ok' if r[5]=='approved' else 'warn' if r[5]=='pending' else 'bad'}}">{{r[5]}}</span></td><td>{{r[6]}}</td></tr>{% endfor %}</table></div></div>'''
+    <div class="card"><h3>🧾 آخرین تراکنش‌ها</h3><div class="table-wrap"><table class="table"><tr><th>ID</th><th>User</th><th>نوع</th><th>Order</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr>{% for r in recent %}<tr><td>#{{r[0]}}</td><td>{{r[1]}}</td><td>{{labels.get(r[2],r[2])}}</td><td>{{r[3] or '-'}}</td><td>{{r[4]|money}} تومان</td><td><span class="badge {{'ok' if r[5]=='approved' else 'warn' if r[5]=='pending' else 'bad'}}">{{r[5]}}</span></td><td>{{r[6]}}</td></tr>{% endfor %}</table></div></div>'''
     labels={'order':'🛒 خرید مستقیم','renewal':'🔄 تمدید مستقیم','wallet_topup':'💳 شارژ کیف پول','wallet_topup_for_order':'💳 شارژ برای خرید','wallet_purchase':'👛 خرید از کیف پول','renewal_wallet':'🔄 تمدید از کیف پول'}
     return page(b,approved=approved_receipts,topups=wallet_topups,direct=direct,wallet_buy=wallet_buy,renew=renew,wallet_total=wallet_total,pending=pending,recent=recent,labels=labels)
 
