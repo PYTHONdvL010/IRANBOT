@@ -268,6 +268,7 @@ def menu(user_id: int):
          InlineKeyboardButton("👤 حساب من", callback_data="profile")],
         [InlineKeyboardButton("💰 کیف پول", callback_data="wallet")],
         [InlineKeyboardButton("🎁 تست رایگان", callback_data="free_test")],
+        [InlineKeyboardButton("🎟 قرعه‌کشی", callback_data="raffle")],
         [InlineKeyboardButton("💬 پشتیبانی", callback_data="support")],
     ]
     if is_admin(user_id):
@@ -283,6 +284,7 @@ def admin_menu():
         [InlineKeyboardButton("📢 عضویت اجباری", callback_data="admin_mandatory")],
         [InlineKeyboardButton("💳 بخش مالی", callback_data="admin_finance")],
         [InlineKeyboardButton("🏷 کدهای تخفیف", callback_data="admin_discounts")],
+        [InlineKeyboardButton("🎟 مدیریت قرعه‌کشی", callback_data="admin_raffle")],
         [InlineKeyboardButton("🖥 پنل‌ها", callback_data="admin_panels")],
         [InlineKeyboardButton("📋 محصولات", callback_data="admin_products")],
         [InlineKeyboardButton("📦 سفارش‌ها", callback_data="admin_orders")],
@@ -1958,6 +1960,26 @@ async def support_admin_reply(message, context):
     except Exception as e: await message.reply_text(f"❌ ارسال پاسخ ناموفق بود: {str(e)[:200]}",reply_markup=admin_menu())
 
 
+async def raffle_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text(
+        "🎟 قرعه‌کشی\n\n⏳ این بخش در حال ساخت هست و به‌زودی فعال می‌شود.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]])
+    )
+
+
+async def admin_raffle_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not is_admin(q.from_user.id):
+        return
+    await q.edit_message_text(
+        "🎟 مدیریت قرعه‌کشی\n\n⏳ این بخش در حال ساخت هست و به‌زودی فعال می‌شود.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ پنل مدیریت", callback_data="admin")]])
+    )
+
+
 async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -2151,6 +2173,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row and row[0]:
             await q.answer("🚫 دسترسی شما به ربات مسدود شده است.",show_alert=True); return
     if data=="admin": return await admin_panel(update,context)
+    if data=="raffle": return await raffle_placeholder(update,context)
+    if data=="admin_raffle": return await admin_raffle_placeholder(update,context)
     if data=="admin_users": return await admin_users(update,context)
     if data.startswith("admin_user:"): return await admin_user_detail(update,context)
     if data.startswith("user_toggle_block:"): return await admin_user_toggle_block(update,context)

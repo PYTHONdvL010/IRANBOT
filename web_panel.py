@@ -14,7 +14,7 @@ DB_PATH = os.getenv('DB_PATH', 'shop.db')
 ADMIN_IDS = {int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()}
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 WEB_SECRET = os.getenv('WEB_SECRET') or secrets.token_hex(32)
-VERSION = '1.0.6'
+VERSION = '1.0.7'
 
 PANEL_TYPES = {'marzban': 'Marzban', 'pasarguard': 'Pasarguard', '3xui': '3x-ui'}
 
@@ -48,7 +48,7 @@ input,textarea,select{width:100%;box-sizing:border-box;background:#081525;color:
 </style></head><body><div class="wrap">
 <div class="top"><div class="brand"><div class="logo">⚡</div><div><h1>IRANBOT <span class="version">v{{version}}</span></h1><div class="muted small">داشبورد مدیریت فروش و سرویس</div></div></div>{% if session.get('admin_id') %}<a class="logout" href="{{url_for('logout')}}">خروج ↪</a>{% endif %}</div>
 {% if session.get('admin_id') %}<div class="nav">
-<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('finance_report_web')}}">📊 گزارش مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('discount')}}">🏷 تخفیف</a><a href="{{url_for('backup')}}">💾 پشتیبان‌گیری</a>
+<a href="{{url_for('dashboard')}}">🏠 داشبورد</a><a href="{{url_for('users')}}">👥 کاربران</a><a href="{{url_for('welcome')}}">👋 خوش‌آمد</a><a href="{{url_for('mandatory')}}">📢 عضویت</a><a href="{{url_for('finance')}}">💳 مالی</a><a href="{{url_for('finance_report_web')}}">📊 گزارش مالی</a><a href="{{url_for('panels')}}">🖥 پنل‌ها</a><a href="{{url_for('products')}}">🛒 محصولات</a><a href="{{url_for('orders')}}">📦 سفارش‌ها</a><a href="{{url_for('free_tests')}}">🎁 تست رایگان</a><a href="{{url_for('raffle')}}">🎟 قرعه‌کشی</a><a href="{{url_for('discount')}}">🏷 تخفیف</a><a href="{{url_for('backup')}}">💾 پشتیبان‌گیری</a>
 </div>{% endif %}
 {% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}
 <div class="muted small" style="margin:28px 2px 0">IRANBOT — نسخه {{version}} — ساخته شده توسط PYTHONdvL010</div></div></body></html>
@@ -303,6 +303,12 @@ def dashboard():
         recent=c.execute("SELECT o.id,o.user_id,p.name,o.status,o.created_at FROM orders o JOIN products p ON p.id=o.product_id ORDER BY o.id DESC LIMIT 8").fetchall()
     b='''<div class="hero"><h2>خوش اومدی 👋</h2><p>همه بخش‌های فروشگاه، کاربران، پنل‌ها و تست رایگان را از همین‌جا مدیریت کن.</p></div><div class="grid">{% for icon,label,val in counts %}<div class="statcard"><div class="staticon">{{icon}}</div><div class="statlabel">{{label}}</div><div class="stat">{{val}}</div></div>{% endfor %}</div><div class="card"><div class="row" style="justify-content:space-between"><h2>📦 آخرین سفارش‌ها</h2><a class="btn dark" href="{{url_for('orders')}}">مشاهده همه</a></div>{% if recent %}<div class="table-wrap"><table class="table"><tr><th>#</th><th>User</th><th>محصول</th><th>وضعیت</th><th>تاریخ</th></tr>{% for r in recent %}<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td><span class="badge {{'ok' if r[3]=='paid' else 'warn'}}">{{r[3]}}</span></td><td>{{r[4]}}</td></tr>{% endfor %}</table></div>{% else %}<div class="empty">هنوز سفارشی ثبت نشده.</div>{% endif %}</div>'''
     return page(b,counts=counts,recent=recent)
+
+@app.route('/raffle')
+@admin_required
+def raffle():
+    b='''<div class="hero"><h2>🎟 قرعه‌کشی</h2><p>⏳ این بخش در حال ساخت هست و به‌زودی فعال می‌شود.</p></div><div class="card"><h3>🚧 در حال ساخت</h3><p class="muted">امکانات ساخت و مدیریت قرعه‌کشی در نسخه بعدی این بخش اضافه خواهد شد.</p></div>'''
+    return page(b)
 
 @app.route('/welcome',methods=['GET','POST'])
 @admin_required
