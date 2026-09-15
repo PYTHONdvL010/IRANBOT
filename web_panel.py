@@ -30,6 +30,25 @@ def money_filter(value):
         return "0"
 
 
+def generate_strong_password(length):
+    length = int(length)
+    if length < 4 or length > 128:
+        raise ValueError('طول رمز باید بین 4 تا 128 کاراکتر باشد.')
+    # Cryptographically strong randomness; guarantee all four character classes.
+    lower = 'abcdefghijklmnopqrstuvwxyz'
+    upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    digits = '0123456789'
+    special = '!@#$%^&*_-+=?'
+    alphabet = lower + upper + digits + special
+    chars = [secrets.choice(lower), secrets.choice(upper), secrets.choice(digits), secrets.choice(special)]
+    chars.extend(secrets.choice(alphabet) for _ in range(length - 4))
+    # Fisher-Yates shuffle using secrets so the required characters are not predictable by position.
+    for i in range(len(chars) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        chars[i], chars[j] = chars[j], chars[i]
+    return ''.join(chars)
+
+
 app.jinja_env.filters['money'] = money_filter
 
 BASE = '''
@@ -322,8 +341,15 @@ def root():
 @app.route('/settings',methods=['GET','POST'])
 @admin_required
 def settings_web():
+    generated_password = None
     if request.method=='POST':
         action=request.form.get('action','')
+        if action=='password_generator':
+            try:
+                length = int(request.form.get('password_length','12'))
+                generated_password = generate_strong_password(length)
+            except (TypeError, ValueError) as exc:
+                flash(f'❌ {exc}')
         if action=='theme':
             theme=request.form.get('theme','dark')
             if theme in ('dark','light'):
@@ -350,8 +376,8 @@ def settings_web():
             set_setting('web_admin_id',new_id); set_setting('web_2fa','1' if enabled else '0'); session['admin_id']=new_id
             flash('✅ تنظیمات ورود با موفقیت ذخیره شد.'); return redirect(url_for('settings_web'))
     current_id=configured_web_admin_id() or ''; two_factor=setting('web_2fa')=='1'; theme=setting('web_theme') or 'dark'
-    b='''<div class="hero"><h2>⚙️ تنظیمات</h2><p>تنظیمات ظاهر Web Panel و امنیت ورود را از این بخش مدیریت کن.</p></div><div class="card"><h3>🎨 تغییر Theme</h3><p class="muted">ظاهر پنل را به حالت سفید یا مشکی تغییر بده.</p><div class="actions"><form method="post"><input type="hidden" name="action" value="theme"><button name="theme" value="light">⚪ سفید</button></form><form method="post"><input type="hidden" name="action" value="theme"><button class="btn dark" name="theme" value="dark">⚫ مشکی</button></form></div><p class="small muted">Theme فعلی: {{'سفید' if theme=='light' else 'مشکی'}}</p></div><div class="card"><h3>🔐 ورود دو مرحله‌ای</h3><form method="post"><input type="hidden" name="action" value="security"><label>آیدی عددی Web Panel</label><input name="admin_id" type="number" min="1" value="{{current_id}}" required><div class="switch"><span><b>فعال‌سازی ورود دو مرحله‌ای</b><br><span class="muted small">بعد از فعال‌سازی، ورود با آیدی عددی + رمز انجام می‌شود.</span></span><input name="two_factor" value="1" type="checkbox" style="width:auto" {% if two_factor %}checked{% endif %}></div><label>رمز عبور جدید</label><input name="password" type="password" minlength="8" placeholder="حداقل 8 کاراکتر"><label>تکرار رمز عبور</label><input name="password_confirm" type="password" minlength="8" placeholder="تکرار رمز"><button>💾 ذخیره تنظیمات</button></form></div>'''
-    return page(b,current_id=current_id,two_factor=two_factor,theme=theme)
+    b='''<div class="hero"><h2>⚙️ تنظیمات</h2><p>تنظیمات ظاهر Web Panel و امنیت ورود را از این بخش مدیریت کن.</p></div><div class="card"><h3>🔑 Password Generator</h3><p class="muted">تعداد کاراکتر را وارد کن؛ رمز شامل حروف کوچک، حروف بزرگ، عدد و حداقل یک کاراکتر خاص ساخته می‌شود.</p><form method="post" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap"><input type="hidden" name="action" value="password_generator"><div><label>تعداد کاراکتر</label><input name="password_length" type="number" min="4" max="128" value="{{request.form.get('password_length','12')}}" required></div><button>⚡ Generate</button></form>{% if generated_password %}<div style="display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap"><input id="generatedPassword" value="{{generated_password}}" readonly style="font-family:monospace;font-size:16px;direction:ltr;text-align:left;flex:1;min-width:240px"><button type="button" onclick="copyGeneratedPassword()">📋 Copy</button><span id="copyStatus" class="small muted"></span></div><script>function copyGeneratedPassword(){const e=document.getElementById('generatedPassword');const status=document.getElementById('copyStatus');navigator.clipboard.writeText(e.value).then(()=>{status.textContent='✅ کپی شد';}).catch(()=>{e.select();document.execCommand('copy');status.textContent='✅ کپی شد';});}</script>{% endif %}</div><div class="card"><h3>🎨 تغییر Theme</h3><p class="muted">ظاهر پنل را به حالت سفید یا مشکی تغییر بده.</p><div class="actions"><form method="post"><input type="hidden" name="action" value="theme"><button name="theme" value="light">⚪ سفید</button></form><form method="post"><input type="hidden" name="action" value="theme"><button class="btn dark" name="theme" value="dark">⚫ مشکی</button></form></div><p class="small muted">Theme فعلی: {{'سفید' if theme=='light' else 'مشکی'}}</p></div><div class="card"><h3>🔐 ورود دو مرحله‌ای</h3><form method="post"><input type="hidden" name="action" value="security"><label>آیدی عددی Web Panel</label><input name="admin_id" type="number" min="1" value="{{current_id}}" required><div class="switch"><span><b>فعال‌سازی ورود دو مرحله‌ای</b><br><span class="muted small">بعد از فعال‌سازی، ورود با آیدی عددی + رمز انجام می‌شود.</span></span><input name="two_factor" value="1" type="checkbox" style="width:auto" {% if two_factor %}checked{% endif %}></div><label>رمز عبور جدید</label><input name="password" type="password" minlength="8" placeholder="حداقل 8 کاراکتر"><label>تکرار رمز عبور</label><input name="password_confirm" type="password" minlength="8" placeholder="تکرار رمز"><button>💾 ذخیره تنظیمات</button></form></div>'''
+    return page(b,current_id=current_id,two_factor=two_factor,theme=theme,generated_password=generated_password)
 
 @app.route('/dashboard')
 @admin_required
