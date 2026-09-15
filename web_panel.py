@@ -9,6 +9,7 @@ from functools import wraps
 
 import httpx
 from flask import Flask, request, redirect, url_for, session, render_template_string, flash, send_file
+from werkzeug.security import check_password_hash, generate_password_hash
 
 DB_PATH = os.getenv('DB_PATH', 'shop.db')
 ADMIN_IDS = {int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()}
