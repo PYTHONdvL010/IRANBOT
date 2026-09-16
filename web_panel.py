@@ -270,7 +270,7 @@ def ensure_schema():
         c.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT DEFAULT '')")
         c.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', first_name TEXT DEFAULT '', is_blocked INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS wallets(user_id INTEGER PRIMARY KEY,balance INTEGER DEFAULT 0)")
-        c.execute("CREATE TABLE IF NOT EXISTS panels(id INTEGER PRIMARY KEY AUTOINCREMENT,panel_type TEXT NOT NULL,name TEXT NOT NULL,address TEXT NOT NULL,username TEXT NOT NULL,password TEXT NOT NULL,status TEXT DEFAULT 'unknown',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+        c.execute("CREATE TABLE IF NOT EXISTS panels(id INTEGER PRIMARY KEY AUTOINCREMENT,panel_type TEXT NOT NULL,name TEXT NOT NULL,address TEXT NOT NULL,username TEXT NOT NULL,password TEXT NOT NULL,status TEXT DEFAULT 'unknown',test_name TEXT DEFAULT '',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS panel_groups(id INTEGER PRIMARY KEY AUTOINCREMENT,panel_id INTEGER NOT NULL,group_id INTEGER,group_name TEXT NOT NULL,inbound_tags TEXT DEFAULT '',UNIQUE(panel_id,group_id))")
         c.execute("CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,price TEXT NOT NULL,description TEXT DEFAULT '',panel_id INTEGER,active INTEGER DEFAULT 1,data_limit_gb INTEGER DEFAULT 1,expire_days INTEGER DEFAULT 1)")
         c.execute("CREATE TABLE IF NOT EXISTS product_categories(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
@@ -280,6 +280,10 @@ def ensure_schema():
         c.execute("CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,kind TEXT NOT NULL,order_id INTEGER,amount INTEGER NOT NULL,status TEXT DEFAULT 'pending',photo_file_id TEXT,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS renewals(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,order_id INTEGER NOT NULL,full_price INTEGER NOT NULL,remaining_gb REAL DEFAULT 0,charge_gb REAL DEFAULT 0,amount INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         c.execute("CREATE TABLE IF NOT EXISTS free_test_settings(panel_id INTEGER PRIMARY KEY,max_tests INTEGER DEFAULT 1,data_limit_mb INTEGER DEFAULT 100,expire_hours INTEGER DEFAULT 1,enabled INTEGER DEFAULT 1)")
+        panel_cols={r[1] for r in c.execute('PRAGMA table_info(panels)').fetchall()}
+        if 'test_name' not in panel_cols:
+            c.execute("ALTER TABLE panels ADD COLUMN test_name TEXT DEFAULT ''")
+        c.execute("UPDATE panels SET test_name=? WHERE test_name IS NULL OR test_name=''",('تست اتصال',))
         for table, columns in {
             'users': [('username',"TEXT DEFAULT ''"),('first_name',"TEXT DEFAULT ''"),('is_blocked','INTEGER DEFAULT 0'),('last_seen',"TEXT DEFAULT ''")],
             'products': [('panel_id','INTEGER'),('data_limit_gb','INTEGER DEFAULT 1'),('expire_days','INTEGER DEFAULT 1'),('active','INTEGER DEFAULT 1'),('category_id','INTEGER')],
@@ -680,23 +684,52 @@ def finance_report_web():
 @admin_required
 def panels():
     if request.method=='POST':
-        pt=request.form.get('panel_type','').strip(); name=request.form.get('name','').strip(); address=request.form.get('address','').strip(); user=request.form.get('username','').strip(); pw=request.form.get('password','').strip()
+        pt=request.form.get('panel_type','').strip(); name=request.form.get('name','').strip(); test_name=request.form.get('test_name','').strip(); address=request.form.get('address','').strip(); user=request.form.get('username','').strip(); pw=request.form.get('password','').strip()
         if not (pt and name and address and user and pw): flash('❌ اطلاعات پنل ناقص است.'); return redirect(url_for('panels'))
-        with db() as c: c.execute('INSERT INTO panels(panel_type,name,address,username,password,status) VALUES(?,?,?,?,?,?)',(pt,name,clean_base_url(address),user,pw,'manual'))
+        if not test_name: test_name=f'تست اتصال {name}'
+        with db() as c: c.execute('INSERT INTO panels(panel_type,name,address,username,password,status,test_name) VALUES(?,?,?,?,?,?,?)',(pt,name,clean_base_url(address),user,pw,'manual',test_name))
         flash('✅ پنل اضافه شد. حالا می‌توانی تست اتصال بگیری.'); return redirect(url_for('panels'))
-    with db() as c: rows=c.execute('SELECT id,panel_type,name,address,status FROM panels ORDER BY id DESC').fetchall()
-    b='''<div class="card"><h2>➕ افزودن پنل</h2><form method="post"><div class="grid"><div><label>نوع پنل</label><select name="panel_type"><option value="pasarguard">Pasarguard</option><option value="marzban">Marzban</option><option value="3xui">3x-ui</option></select></div><div><label>نام پنل</label><input name="name" placeholder="مثلاً PG اصلی" required></div></div><label>آدرس</label><input name="address" placeholder="https://panel.example.com:2096" required><div class="grid"><div><label>Username</label><input name="username" required></div><div><label>Password</label><input name="password" type="password" required></div></div><button>➕ ثبت پنل</button></form></div><div class="card"><h2>🖥 پنل‌ها</h2>{% if rows %}<div class="grid">{% for r in rows %}<div class="statcard"><div class="row" style="justify-content:space-between"><b>{{r[2]}}</b><span class="badge {{'ok' if r[4]=='connected' else 'warn' if r[4]=='manual' else 'bad'}}">{{r[4]}}</span></div><p class="muted small">#{{r[0]}} · {{r[1]}}</p><p class="mini">{{r[3]}}</p><div class="actions"><a class="btn blue" href="{{url_for('panel_test_web',pid=r[0])}}">🧪 تست اتصال</a>{% if r[1]=='pasarguard' %}<a class="btn dark" href="{{url_for('panel_groups_web',pid=r[0])}}">🔗 Groupها</a><a class="btn dark" href="{{url_for('free_test_settings_web',pid=r[0])}}">🎁 تنظیم تست</a>{% endif %}<form method="post" action="{{url_for('panel_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></div></div>{% endfor %}</div>{% else %}<div class="empty">هنوز پنلی ثبت نشده.</div>{% endif %}</div>'''
+    with db() as c: rows=c.execute("SELECT id,panel_type,name,address,status,COALESCE(test_name,'تست اتصال') FROM panels ORDER BY id DESC").fetchall()
+    b='''<div class="card"><h2>➕ افزودن پنل</h2><form method="post"><div class="grid"><div><label>نوع پنل</label><select name="panel_type"><option value="pasarguard">Pasarguard</option><option value="marzban">Marzban</option><option value="3xui">3x-ui</option></select></div><div><label>نام پنل</label><input name="name" placeholder="مثلاً PG اصلی" required></div><div><label>نام تست اتصال</label><input name="test_name" placeholder="مثلاً تست اصلی / تست شبانه"></div></div><label>آدرس</label><input name="address" placeholder="https://panel.example.com:2096" required><div class="grid"><div><label>Username</label><input name="username" required></div><div><label>Password</label><input name="password" type="password" required></div></div><button>➕ ثبت پنل</button></form></div><div class="card"><h2>🖥 پنل‌ها</h2>{% if rows %}<div class="grid">{% for r in rows %}<div class="statcard"><div class="row" style="justify-content:space-between"><b>{{r[2]}}</b><span class="badge {{'ok' if r[4]=='connected' else 'warn' if r[4]=='manual' else 'bad'}}">{{r[4]}}</span></div><p class="muted small">#{{r[0]}} · {{r[1]}}</p><p class="mini">{{r[3]}}</p><p class="small">🧪 نام تست: <b>{{r[5]}}</b></p><div class="actions"><a class="btn blue" href="{{url_for('panel_test_web',pid=r[0])}}">🧪 {{r[5]}}</a><a class="btn dark" href="{{url_for('panel_edit_web',pid=r[0])}}">✏️ ویرایش پنل</a>{% if r[1]=='pasarguard' %}<a class="btn dark" href="{{url_for('panel_groups_web',pid=r[0])}}">🔗 Groupها</a><a class="btn dark" href="{{url_for('free_test_settings_web',pid=r[0])}}">🎁 تنظیم تست</a>{% endif %}<form method="post" action="{{url_for('panel_delete_web')}}"><input type="hidden" name="id" value="{{r[0]}}"><button class="danger">🗑 حذف</button></form></div></div>{% endfor %}</div>{% else %}<div class="empty">هنوز پنلی ثبت نشده.</div>{% endif %}</div>'''
     return page(b,rows=rows)
+
+@app.route('/panels/edit/<int:pid>',methods=['GET','POST'])
+@admin_required
+def panel_edit_web(pid):
+    with db() as c:
+        row=c.execute("SELECT id,panel_type,name,address,username,password,status,COALESCE(test_name,'') FROM panels WHERE id=?",(pid,)).fetchone()
+    if not row:
+        flash('❌ پنل پیدا نشد.'); return redirect(url_for('panels'))
+    if request.method=='POST':
+        pt=request.form.get('panel_type','').strip(); name=request.form.get('name','').strip(); test_name=request.form.get('test_name','').strip(); address=request.form.get('address','').strip(); user=request.form.get('username','').strip(); pw=request.form.get('password','').strip()
+        if pt not in ('pasarguard','marzban','3xui') or not name or not address or not user or not pw:
+            flash('❌ اطلاعات پنل ناقص یا نامعتبر است.'); return redirect(url_for('panel_edit_web',pid=pid))
+        if not test_name: test_name=f'تست اتصال {name}'
+        if not re.match(r'^https?://',address,re.I):
+            flash('❌ آدرس باید با http:// یا https:// شروع شود.'); return redirect(url_for('panel_edit_web',pid=pid))
+        ok,reason,_,_,client=panel_login_sync(pt,address,user,pw)
+        if client: client.close()
+        if not ok:
+            flash('🔴 اطلاعات جدید ذخیره نشد؛ تست اتصال ناموفق: '+reason); return redirect(url_for('panel_edit_web',pid=pid))
+        with db() as c:
+            c.execute('UPDATE panels SET panel_type=?,name=?,address=?,username=?,password=?,status=?,test_name=? WHERE id=?',(pt,name,clean_base_url(address),user,pw,'connected',test_name,pid))
+            if pt!='pasarguard':
+                c.execute('DELETE FROM free_test_settings WHERE panel_id=?',(pid,)); c.execute('DELETE FROM panel_groups WHERE panel_id=?',(pid,))
+        flash(f'✅ پنل #{pid} ویرایش شد و اتصال تست شد. نام تست: {test_name}')
+        return redirect(url_for('panels'))
+    b='''<div class="card"><div class="row" style="justify-content:space-between"><div><h2>✏️ ویرایش پنل #{{row[0]}}</h2><p class="muted">نام پنل و نام تست اتصال مستقل هستند.</p></div><a class="btn dark" href="{{url_for('panels')}}">↩️ پنل‌ها</a></div><form method="post"><div class="grid"><div><label>نوع پنل</label><select name="panel_type"><option value="pasarguard" {% if row[1]=='pasarguard' %}selected{% endif %}>Pasarguard</option><option value="marzban" {% if row[1]=='marzban' %}selected{% endif %}>Marzban</option><option value="3xui" {% if row[1]=='3xui' %}selected{% endif %}>3x-ui</option></select></div><div><label>نام پنل</label><input name="name" value="{{row[2]}}" required></div><div><label>نام تست اتصال</label><input name="test_name" value="{{row[7]}}" placeholder="مثلاً تست اصلی / تست شبانه"></div></div><label>آدرس</label><input name="address" value="{{row[3]}}" required><div class="grid"><div><label>Username</label><input name="username" value="{{row[4]}}" required></div><div><label>Password</label><input name="password" type="password" value="{{row[5]}}" required></div></div><button>💾 ذخیره و تست اتصال</button></form></div>'''
+    return page(b,row=row)
 
 @app.route('/panels/test/<int:pid>')
 @admin_required
 def panel_test_web(pid):
-    with db() as c: row=c.execute('SELECT panel_type,address,username,password FROM panels WHERE id=?',(pid,)).fetchone()
+    with db() as c: row=c.execute("SELECT panel_type,address,username,password,COALESCE(test_name,'تست اتصال') FROM panels WHERE id=?",(pid,)).fetchone()
     if not row: flash('❌ پنل پیدا نشد.'); return redirect(url_for('panels'))
-    ok,reason,_,_,client=panel_login_sync(*row)
+    pt,address,user,pw,test_name=row
+    ok,reason,_,_,client=panel_login_sync(pt,address,user,pw)
     if client: client.close()
     with db() as c: c.execute('UPDATE panels SET status=? WHERE id=?',('connected' if ok else 'error',pid))
-    flash(('🟢 اتصال موفق بود.' if ok else '🔴 تست اتصال ناموفق: '+reason))
+    flash((f'🟢 {test_name} — اتصال موفق بود.' if ok else f'🔴 {test_name} — تست اتصال ناموفق: '+reason))
     return redirect(url_for('panels'))
 
 @app.route('/panels/groups/<int:pid>',methods=['GET','POST'])

@@ -67,6 +67,7 @@ def init_db():
             username TEXT NOT NULL,
             password TEXT NOT NULL,
             status TEXT DEFAULT 'unknown',
+            test_name TEXT DEFAULT '',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS panel_groups(
@@ -135,6 +136,10 @@ def init_db():
             user_id INTEGER PRIMARY KEY, admin_id INTEGER NOT NULL, active INTEGER DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
+        panel_cols = {r[1] for r in c.execute("PRAGMA table_info(panels)").fetchall()}
+        if 'test_name' not in panel_cols:
+            c.execute("ALTER TABLE panels ADD COLUMN test_name TEXT DEFAULT ''")
+        c.execute("UPDATE panels SET test_name=? WHERE test_name IS NULL OR test_name=''", ('تست اتصال',))
         cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "panel_id" not in cols:
             c.execute("ALTER TABLE products ADD COLUMN panel_id INTEGER")
@@ -1096,9 +1101,10 @@ async def save_panel_after_test(message, flow):
         await message.reply_text(panel_error_text(reason), reply_markup=cancel_keyboard())
         return False
     name = f"{PANEL_TYPES[flow['panel_type']]} Panel"
+    test_name = f"تست اتصال {PANEL_TYPES[flow['panel_type']]}"
     with conn() as c:
-        pid = c.execute("INSERT INTO panels(panel_type,name,address,username,password,status) VALUES(?,?,?,?,?,?)",
-                        (flow["panel_type"], name, clean_base_url(flow["address"]), flow["username"], flow["password"], "connected")).lastrowid
+        pid = c.execute("INSERT INTO panels(panel_type,name,address,username,password,status,test_name) VALUES(?,?,?,?,?,?,?)",
+                        (flow["panel_type"], name, clean_base_url(flow["address"]), flow["username"], flow["password"], "connected", test_name)).lastrowid
     await message.reply_text(f"✅ پنل با موفقیت ثبت شد.\n\nنوع: {PANEL_TYPES[flow['panel_type']]}\nآدرس: {clean_base_url(flow['address'])}\nوضعیت: 🟢 Connected\nشناسه: #{pid}", reply_markup=admin_menu())
     return True
 
@@ -1111,13 +1117,13 @@ async def panel_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     pid = int(q.data.split(":")[1])
     with conn() as c:
-        row = c.execute("SELECT panel_type,name,address,status FROM panels WHERE id=?", (pid,)).fetchone()
+        row = c.execute("SELECT panel_type,name,address,status,COALESCE(test_name,'تست اتصال') FROM panels WHERE id=?", (pid,)).fetchone()
         groups = c.execute("SELECT group_id,group_name,inbound_tags FROM panel_groups WHERE panel_id=? ORDER BY id", (pid,)).fetchall()
     if not row:
         await q.edit_message_text("❌ پنل پیدا نشد.", reply_markup=admin_menu())
         return
-    pt, name, address, status = row
-    text = f"🖥 {PANEL_TYPES.get(pt, pt)}\n\nنام: {name}\nآدرس: {address}\nوضعیت: {status}\n\n"
+    pt, name, address, status, test_name = row
+    text = f"🖥 {PANEL_TYPES.get(pt, pt)}\n\nنام پنل: {name}\n🧪 نام تست: {test_name}\nآدرس: {address}\nوضعیت: {status}\n\n"
     if groups:
         text += "🔗 Groupهای ثبت‌شده:\n"
         for gid, gname, tags in groups:
@@ -1139,12 +1145,23 @@ async def panel_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("🎁 تنظیم تست رایگان کاربران", callback_data=f"free_test_settings:{pid}")])
         buttons.append([InlineKeyboardButton("🔄 بروزرسانی Groupها", callback_data=f"refresh_groups:{pid}")])
     buttons += [
-        [InlineKeyboardButton("✏️ ویرایش پنل", callback_data=f"edit_panel:{pid}")],
-        [InlineKeyboardButton("🧪 تست API Pasarguard" if pt == "pasarguard" else "🧪 تست اتصال", callback_data=f"test_panel:{pid}")],
+        [InlineKeyboardButton("✏️ ویرایش پنل", callback_data=f"edit_panel:{pid}"), InlineKeyboardButton("🏷 نام تست", callback_data=f"edit_test_name:{pid}")],
+        [InlineKeyboardButton(f"🧪 {test_name}", callback_data=f"test_panel:{pid}")],
         [InlineKeyboardButton("🗑 حذف پنل", callback_data=f"delete_panel:{pid}")],
         [InlineKeyboardButton("↩️ پنل‌ها", callback_data="admin_panels")]
     ]
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def edit_test_name_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    pid=int(q.data.split(":")[1])
+    with conn() as c: row=c.execute("SELECT name,COALESCE(test_name,'') FROM panels WHERE id=?",(pid,)).fetchone()
+    if not row:
+        await q.edit_message_text("❌ پنل پیدا نشد.",reply_markup=admin_menu()); return
+    context.user_data["flow"]={"type":"panel_test_name","step":"name","panel_id":pid}
+    await q.edit_message_text(f"🏷 نام جدید تست اتصال را بفرست.\n\nپنل: {row[0]}\nنام فعلی تست: {row[1] or '-'}",reply_markup=cancel_keyboard())
 
 
 async def edit_panel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1185,16 +1202,16 @@ async def test_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     pid = int(q.data.split(":")[1])
     with conn() as c:
-        row = c.execute("SELECT panel_type,name,address,username,password FROM panels WHERE id=?", (pid,)).fetchone()
+        row = c.execute("SELECT panel_type,name,address,username,password,COALESCE(test_name,'تست اتصال') FROM panels WHERE id=?", (pid,)).fetchone()
     if not row:
         await q.edit_message_text("❌ پنل پیدا نشد.", reply_markup=admin_menu())
         return
-    pt, name, address, username, password = row
+    pt, name, address, username, password, test_name = row
     ok, reason, _ = await panel_api_login(pt, address, username, password)
     with conn() as c:
         c.execute("UPDATE panels SET status=? WHERE id=?", ("connected" if ok else "error", pid))
-    text = (f"🧪 {PANEL_TYPES.get(pt, pt)}\n\nنام: {name}\nآدرس: {address}\n\n🟢 API Login: موفق\n🔐 احراز هویت: موفق"
-            if ok else f"🧪 {PANEL_TYPES.get(pt, pt)}\n\n{panel_error_text(reason)}")
+    text = (f"🧪 {test_name}\n\nپنل: {name}\nنوع: {PANEL_TYPES.get(pt, pt)}\nآدرس: {address}\n\n🟢 API Login: موفق\n🔐 احراز هویت: موفق"
+            if ok else f"🧪 {test_name}\n\nپنل: {name}\n{panel_error_text(reason)}")
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ جزئیات پنل", callback_data=f"panel_detail:{pid}")]]))
 
 
@@ -1906,6 +1923,13 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with conn() as c: cats=c.execute("SELECT id,name FROM product_categories ORDER BY id").fetchall()
         buttons=[[InlineKeyboardButton("🚫 بدون دسته‌بندی",callback_data="product_category:none")]]+[ [InlineKeyboardButton(f"📂 {cid} {name}",callback_data=f"product_category:{cid}")] for cid,name in cats ]
         await update.message.reply_text("📂 دسته‌بندی محصول را انتخاب کن یا بدون دسته‌بندی بگذار:",reply_markup=InlineKeyboardMarkup(buttons)); return
+    if flow["type"]=="panel_test_name":
+        if flow["step"]=="name":
+            if not text: await update.message.reply_text("❌ نام تست نمی‌تواند خالی باشد."); return
+            if len(text)>80: await update.message.reply_text("❌ نام تست حداکثر 80 کاراکتر باشد."); return
+            with conn() as c: c.execute("UPDATE panels SET test_name=? WHERE id=?",(text,flow["panel_id"]))
+            context.user_data.pop("flow",None)
+            await update.message.reply_text(f"✅ نام تست پنل #{flow['panel_id']} تغییر کرد: {text}",reply_markup=admin_menu()); return
     if flow["type"]=="panel_edit":
         if flow["step"]=="name":
             if not text: await update.message.reply_text("❌ نام نمی‌تواند خالی باشد."); return
@@ -2557,6 +2581,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("panel_detail:"): return await panel_detail(update,context)
     if data.startswith("test_panel:"): return await test_panel(update,context)
     if data.startswith("edit_panel:"): return await edit_panel_start(update,context)
+    if data.startswith("edit_test_name:"): return await edit_test_name_start(update,context)
     if data.startswith("edit_panel_type:"): return await edit_panel_type(update,context)
     if data.startswith("delete_panel:"): return await delete_panel(update,context)
     if data.startswith("delete_group:"): return await delete_group(update,context)
