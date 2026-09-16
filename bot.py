@@ -2215,9 +2215,62 @@ async def raffle_start(update, context):
     winner=random.choice(rows)[0]
     with conn() as c: c.execute("UPDATE raffles SET status='drawn' WHERE id=?",(rid,)); c.execute("DELETE FROM raffle_participants WHERE raffle_id=?",(rid,))
     prize=f"{r[1]}" if r[0]!='money' else f"{r[2]:,} تومان"
-    try: await context.bot.send_message(winner,f"🎉 برنده شدی!\n\n🎟 قرعه‌کشی #{rid}\n🎁 جایزه: {prize}\n\nبرووووو تو PV ادمین 😄")
-    except Exception: pass
-    await q.edit_message_text(f"🎉 قرعه‌کشی انجام شد!\n\n🏆 برنده: {winner}\n🎁 جایزه: {prize}\n\nبخش قرعه‌کشی حذف شد.",reply_markup=admin_menu())
+
+    # Winner identity: fetch the Telegram profile when possible, then notify
+    # both the winner and every configured admin with direct private-chat buttons.
+    try:
+        winner_chat = await context.bot.get_chat(winner)
+        winner_name = (winner_chat.first_name or "کاربر") + (f" {winner_chat.last_name}" if winner_chat.last_name else "")
+        winner_username = f"@{winner_chat.username}" if winner_chat.username else "بدون username"
+    except Exception:
+        winner_name = "کاربر"
+        winner_username = "بدون username"
+
+    winner_text=(
+        f"🎉 تبریک! شما برنده قرعه‌کشی شدید.\n\n"
+        f"🎟 قرعه‌کشی: #{rid}\n"
+        f"🎁 جایزه: {prize}\n\n"
+        f"👤 نام: {winner_name}\n"
+        f"🆔 شناسه تلگرام: {winner}\n"
+        f"🔗 Username: {winner_username}\n\n"
+        f"📩 برای دریافت جایزه، روی دکمه زیر بزن و وارد چت خصوصی ادمین شو."
+    )
+    try:
+        admin_id = next(iter(ADMIN_IDS), None)
+        admin_label = "ادمین"
+        if admin_id:
+            try:
+                admin_chat = await context.bot.get_chat(admin_id)
+                admin_label = ((admin_chat.first_name or "ادمین") +
+                               (f" {admin_chat.last_name}" if admin_chat.last_name else ""))
+                if admin_chat.username:
+                    admin_label += f" (@{admin_chat.username})"
+            except Exception:
+                pass
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 چت خصوصی با ادمین", url=f"tg://user?id={admin_id}")]]) if admin_id else None
+        await context.bot.send_message(winner, winner_text, reply_markup=kb)
+    except Exception as e:
+        print(f"Raffle winner notification failed for {winner}: {e}")
+
+    admin_text=(
+        f"🏆 <b>قرعه‌کشی #{rid} انجام شد</b>\n\n"
+        f"🎁 جایزه: {prize}\n"
+        f"👤 برنده: {winner_name}\n"
+        f"🆔 ID: <code>{winner}</code>\n"
+        f"🔗 Username: {winner_username}\n\n"
+        f"📩 با برنده وارد چت خصوصی شوید و جایزه را هماهنگ کنید."
+    )
+    winner_kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 چت خصوصی با برنده", url=f"tg://user?id={winner}")]])
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(admin_id, admin_text, parse_mode="HTML", reply_markup=winner_kb)
+        except Exception as e:
+            print(f"Raffle admin notification failed for {admin_id}: {e}")
+
+    await q.edit_message_text(
+        f"🎉 قرعه‌کشی انجام شد!\n\n🏆 برنده: {winner_name}\n🆔 ID: {winner}\n🔗 {winner_username}\n🎁 جایزه: {prize}\n\n📩 اعلان برای برنده و ادمین ارسال شد.",
+        reply_markup=admin_menu()
+    )
 
 
 async def simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
