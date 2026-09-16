@@ -131,6 +131,10 @@ def init_db():
             raffle_id INTEGER NOT NULL, user_id INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY(raffle_id,user_id)
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS admin_user_chats(
+            user_id INTEGER PRIMARY KEY, admin_id INTEGER NOT NULL, active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
         cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "panel_id" not in cols:
             c.execute("ALTER TABLE products ADD COLUMN panel_id INTEGER")
@@ -680,6 +684,7 @@ async def admin_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons=[
         [InlineKeyboardButton("➕ افزایش موجودی",callback_data=f"user_balance_add:{uid}"),InlineKeyboardButton("➖ کاهش موجودی",callback_data=f"user_balance_sub:{uid}")],
         [InlineKeyboardButton("🔓 رفع مسدودی" if u[3] else "🚫 مسدود کردن",callback_data=f"user_toggle_block:{uid}")],
+        [InlineKeyboardButton("💬 پیام به کاربر",callback_data=f"user_message:{uid}")],
         [InlineKeyboardButton("↩️ کاربران",callback_data="admin_users")]
     ]
     text=(f"👤 مدیریت کاربر\n\nID: {u[0]}\nنام: {u[2] or '-'}\nUsername: @{u[1] or '-'}\nوضعیت: {status}\n\n"
@@ -702,6 +707,17 @@ async def admin_user_toggle_block(update: Update, context: ContextTypes.DEFAULT_
         await context.bot.send_message(uid,"🚫 دسترسی شما به ربات توسط مدیریت مسدود شد." if new else "✅ مسدودی حساب شما توسط مدیریت برداشته شد.")
     except Exception: pass
     await admin_user_detail(update,context)
+
+async def admin_user_message_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    uid=int(q.data.split(":")[1])
+    with conn() as c: exists=c.execute("SELECT 1 FROM users WHERE user_id=?",(uid,)).fetchone()
+    if not exists:
+        await q.edit_message_text("❌ کاربر پیدا نشد.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ کاربران",callback_data="admin_users")]])); return
+    with conn() as c: c.execute("INSERT OR REPLACE INTO admin_user_chats(user_id,admin_id,active,updated_at) VALUES(?,?,1,CURRENT_TIMESTAMP)",(uid,q.from_user.id))
+    context.user_data["flow"]={"type":"admin_user_message","user_id":uid}
+    await q.edit_message_text("💬 پیام به کاربر\n\nمتن یا عکس خودت را بفرست.\nکاربر می‌تواند پاسخ بدهد و پاسخ او برای همین ادمین ارسال می‌شود.",reply_markup=cancel_keyboard())
 
 async def admin_user_balance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -1636,6 +1652,40 @@ async def test_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"❌ ساخت تست 1MB ناموفق بود.\n\n{str(e)[:700]}",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Pasarguard",callback_data=f"panel_detail:{pid}")]]))
 
 
+async def send_admin_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    flow=context.user_data.get("flow",{})
+    if flow.get("type")!="admin_user_message" or not is_admin(update.effective_user.id): return False
+    uid=int(flow["user_id"]); msg=update.message
+    try:
+        if msg.photo:
+            await context.bot.send_photo(uid, photo=msg.photo[-1].file_id, caption=msg.caption or "")
+        elif msg.text:
+            await context.bot.send_message(uid, msg.text)
+        else:
+            return False
+        with conn() as c: c.execute("INSERT OR REPLACE INTO admin_user_chats(user_id,admin_id,active,updated_at) VALUES(?,?,1,CURRENT_TIMESTAMP)",(uid,update.effective_user.id))
+        context.user_data.pop("flow",None)
+        await msg.reply_text("✅ پیام برای کاربر ارسال شد.", reply_markup=admin_menu())
+    except Exception as e:
+        await msg.reply_text(f"❌ ارسال پیام ناموفق بود.\n\n{str(e)[:300]}", reply_markup=admin_menu())
+    return True
+
+async def forward_user_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.effective_user or is_admin(update.effective_user.id): return False
+    uid=update.effective_user.id
+    with conn() as c: row=c.execute("SELECT admin_id,active FROM admin_user_chats WHERE user_id=?",(uid,)).fetchone()
+    if not row or not row[1]: return False
+    aid=row[0]; msg=update.message
+    try:
+        if msg.photo:
+            await context.bot.send_photo(aid, photo=msg.photo[-1].file_id, caption=f"💬 پیام از کاربر {uid}\n"+(msg.caption or ""))
+        elif msg.text:
+            await context.bot.send_message(aid, f"💬 پیام از کاربر {uid}\n\n{msg.text}")
+        else: return False
+        return True
+    except Exception:
+        return False
+
 async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user: return
     user_id=update.effective_user.id
@@ -1644,8 +1694,12 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             blocked=c.execute("SELECT is_blocked FROM users WHERE user_id=?",(user_id,)).fetchone()
         if blocked and blocked[0]: return
     flow=context.user_data.get("flow")
-    if not flow: return
+    if not flow:
+        await forward_user_chat_message(update, context)
+        return
     if flow.get("type") not in ("wallet_amount", "payment_photo", "support", "coupon_user") and not is_admin(user_id): return
+    if flow.get("type")=="admin_user_message":
+        await send_admin_user_message(update, context); return
     if flow.get("type") == "support_admin_reply" and not is_admin(user_id): return
     text=update.message.text.strip()
     if flow["type"]=="wallet_amount":
@@ -2001,6 +2055,10 @@ async def deliver_order(q,oid,uid,from_wallet=False):
 
 
 async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.effective_user and is_admin(update.effective_user.id):
+        if await send_admin_user_message(update, context): return
+    if update.message and update.effective_user and not is_admin(update.effective_user.id):
+        if await forward_user_chat_message(update, context): return
     flow=context.user_data.get("flow",{})
     if flow.get("type")=="support" and update.message and update.message.photo:
         await support_user_message(update, context); return
@@ -2215,6 +2273,12 @@ async def raffle_start(update, context):
     winner=random.choice(rows)[0]
     with conn() as c: c.execute("UPDATE raffles SET status='drawn' WHERE id=?",(rid,)); c.execute("DELETE FROM raffle_participants WHERE raffle_id=?",(rid,))
     prize=f"{r[1]}" if r[0]!='money' else f"{r[2]:,} تومان"
+    wallet_awarded = 0
+    if r[0] == "money" and int(r[2] or 0) > 0:
+        wallet_awarded = int(r[2])
+        with conn() as c:
+            c.execute("INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)",(winner,))
+            c.execute("UPDATE wallets SET balance=balance+? WHERE user_id=?",(wallet_awarded,winner))
 
     # Winner identity: fetch the Telegram profile when possible, then notify
     # both the winner and every configured admin with direct private-chat buttons.
@@ -2233,7 +2297,7 @@ async def raffle_start(update, context):
         f"👤 نام: {winner_name}\n"
         f"🆔 شناسه تلگرام: {winner}\n"
         f"🔗 Username: {winner_username}\n\n"
-        f"📩 برای دریافت جایزه، روی دکمه زیر بزن و وارد چت خصوصی ادمین شو."
+        + (f"💰 مبلغ {wallet_awarded:,} تومان به کیف پولت اضافه شد.\n\n🎁 برو کیف پولت رو چک کن؛ سورپرایز منتظرته!" if wallet_awarded else "🎁 جایزه شما ثبت شد و مدیریت آن را پیگیری می‌کند.")
     )
     try:
         admin_id = next(iter(ADMIN_IDS), None)
@@ -2247,8 +2311,7 @@ async def raffle_start(update, context):
                     admin_label += f" (@{admin_chat.username})"
             except Exception:
                 pass
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 چت خصوصی با ادمین", url=f"tg://user?id={admin_id}")]]) if admin_id else None
-        await context.bot.send_message(winner, winner_text, reply_markup=kb)
+        await context.bot.send_message(winner, winner_text)
     except Exception as e:
         print(f"Raffle winner notification failed for {winner}: {e}")
 
@@ -2258,12 +2321,11 @@ async def raffle_start(update, context):
         f"👤 برنده: {winner_name}\n"
         f"🆔 ID: <code>{winner}</code>\n"
         f"🔗 Username: {winner_username}\n\n"
-        f"📩 با برنده وارد چت خصوصی شوید و جایزه را هماهنگ کنید."
+        + (f"💰 مبلغ {wallet_awarded:,} تومان خودکار به کیف پول کاربر اضافه شد.\n📥 کاربر پول را دریافت کرد." if wallet_awarded else "🎁 جایزه غیرنقدی است و باید توسط مدیریت تحویل شود.")
     )
-    winner_kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 چت خصوصی با برنده", url=f"tg://user?id={winner}")]])
     for admin_id in ADMIN_IDS:
         try:
-            await context.bot.send_message(admin_id, admin_text, parse_mode="HTML", reply_markup=winner_kb)
+            await context.bot.send_message(admin_id, admin_text, parse_mode="HTML")
         except Exception as e:
             print(f"Raffle admin notification failed for {admin_id}: {e}")
 
@@ -2478,6 +2540,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("raffle_start:"): return await raffle_start(update,context)
     if data=="admin_users": return await admin_users(update,context)
     if data.startswith("admin_user:"): return await admin_user_detail(update,context)
+    if data.startswith("user_message:"): return await admin_user_message_start(update,context)
     if data.startswith("user_toggle_block:"): return await admin_user_toggle_block(update,context)
     if data.startswith("user_balance_add:") or data.startswith("user_balance_sub:"): return await admin_user_balance_start(update,context)
     if data=="admin_add": return await admin_add_product(update,context)

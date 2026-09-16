@@ -15,7 +15,7 @@ DB_PATH = os.getenv('DB_PATH', 'shop.db')
 ADMIN_IDS = {int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()}
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 WEB_SECRET = os.getenv('WEB_SECRET') or secrets.token_hex(32)
-VERSION = '1.0.8'
+VERSION = '1.0.9'
 
 PANEL_TYPES = {'marzban': 'Marzban', 'pasarguard': 'Pasarguard', '3xui': '3x-ui'}
 
