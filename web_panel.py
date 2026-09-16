@@ -975,10 +975,50 @@ def raffle():
                     flash('❌ قرعه‌کشی فعال نیست یا شرکت‌کننده ندارد.'); return redirect(url_for('raffle'))
                 import random
                 winner=random.choice([x[0] for x in rows])
-                c.execute("UPDATE raffles SET status='drawn' WHERE id=?",(rid,)); c.execute('DELETE FROM raffle_participants WHERE raffle_id=?',(rid,))
+                # دقیقاً مانند شروع قرعه‌کشی از Bot: اول قرعه‌کشی بسته می‌شود و
+                # اگر جایزه نقدی باشد، مبلغ همان لحظه به Wallet برنده واریز می‌شود.
+                c.execute("UPDATE raffles SET status='drawn' WHERE id=?",(rid,))
+                c.execute('DELETE FROM raffle_participants WHERE raffle_id=?',(rid,))
+                wallet_awarded=0
+                if r[0]=='money' and int(r[2] or 0)>0:
+                    wallet_awarded=int(r[2])
+                    c.execute('INSERT OR IGNORE INTO wallets(user_id,balance) VALUES(?,0)',(winner,))
+                    c.execute('UPDATE wallets SET balance=balance+? WHERE user_id=?',(wallet_awarded,winner))
+                balance_row=c.execute('SELECT balance FROM wallets WHERE user_id=?',(winner,)).fetchone()
+                winner_balance=int(balance_row[0]) if balance_row else 0
+
             prize=(f'{r[2]:,} تومان' if r[0]=='money' else r[1])
-            telegram_notify(winner,f'🎉 تبریک!\nشما برنده قرعه‌کشی #{rid} شدید.\n🎁 جایزه: {prize}\n\nبرای دریافت جایزه با ادمین در ارتباط باشید.')
-            flash(f'🎉 برنده قرعه‌کشی #{rid}: {winner} — جایزه: {prize}'); return redirect(url_for('raffle'))
+            # پیام برنده همان منطق Bot را دارد: در جایزه نقدی به Wallet اشاره می‌شود
+            # و کاربر نیازی به مراجعه به Private Chat ادمین ندارد.
+            winner_text=(
+                f'🎉 تبریک! شما برنده قرعه‌کشی شدید.\n\n'
+                f'🎟 قرعه‌کشی: #{rid}\n'
+                f'🎁 جایزه: {prize}\n\n'
+                + (f'💰 مبلغ {wallet_awarded:,} تومان به کیف پولت اضافه شد.\n\n🎁 برو کیف پولت رو چک کن؛ سورپرایز منتظرته!'
+                   if wallet_awarded else
+                   '🎁 جایزه شما ثبت شد و مدیریت آن را پیگیری می‌کند.')
+            )
+            winner_sent=telegram_notify(winner,winner_text)
+
+            # اطلاع‌رسانی به تمام ADMIN_IDS مثل Bot.
+            admin_text=(
+                f'🏆 قرعه‌کشی #{rid} انجام شد.\n\n'
+                f'🎁 جایزه: {prize}\n'
+                f'👤 برنده: {winner}\n'
+                + (f'\n💰 مبلغ {wallet_awarded:,} تومان خودکار به کیف پول کاربر اضافه شد.\n📥 کاربر پول را دریافت کرد.'
+                   if wallet_awarded else
+                   '\n🎁 جایزه غیرنقدی است و باید توسط مدیریت تحویل شود.')
+            )
+            admin_sent=0
+            for admin_id in ADMIN_IDS:
+                if telegram_notify(admin_id,admin_text):
+                    admin_sent += 1
+
+            if wallet_awarded:
+                flash(f'🎉 قرعه‌کشی #{rid} انجام شد؛ برنده {winner} است و {wallet_awarded:,} تومان به Wallet او واریز شد.')
+            else:
+                flash(f'🎉 قرعه‌کشی #{rid} انجام شد؛ برنده {winner} است. اعلان برنده: {"ارسال شد" if winner_sent else "ناموفق"} | اعلان ادمین: {admin_sent}/{len(ADMIN_IDS)}')
+            return redirect(url_for('raffle'))
         if action=='create':
             pt=request.form.get('prize_type','item'); name=request.form.get('prize_name','').strip()
             try: amount=int(request.form.get('prize_amount','0') or 0); fee=int(request.form.get('entry_fee','0') or 0); limit=int(request.form.get('max_participants','30') or 30)
