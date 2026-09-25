@@ -60,7 +60,13 @@ async function api(path){const r=await fetch(path,{headers:{'X-Telegram-Init-Dat
 function showTab(tab,el){current=tab;document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));el.classList.add('active');render()}
 async function render(){const c=document.getElementById('content');c.classList.add('loading');try{if(current==='products'){const d=await api('/api/products');c.innerHTML=d.products.length?d.products.map(p=>`<article class="card"><h3>🛒 ${esc(p.name)}</h3><div class="muted">${esc(p.description||'')}</div><div class="price">${Number(p.price||0).toLocaleString()} تومان</div><button class="btn" onclick="buy(${p.id})">مشاهده محصول</button></article>`).join(''):'<div class="card empty">محصولی موجود نیست.</div>'}else if(current==='services'){const d=await api('/api/me');c.innerHTML=`<div class="card"><h3>🔐 سرویس‌های من</h3><div class="muted">${d.user?'کاربر متصل: '+esc(d.user.first_name||d.user.username||d.user.id):'برای مشاهده سرویس‌ها Mini App را از داخل Telegram باز کنید.'}</div></div>`}else if(current==='profile'){const d=await api('/api/me');c.innerHTML=`<div class="card"><h3>👤 پروفایل</h3><div class="muted">${d.user?'ID: '+d.user.id:'احراز هویت Telegram انجام نشده است.'}</div></div><div class="card"><h3>💰 کیف پول</h3><div class="price">${Number(d.balance||0).toLocaleString()} تومان</div></div>`}else{c.innerHTML='<article class="card"><h3>🛒 فروشگاه</h3><div class="muted">از بخش محصولات سرویس موردنظر خود را انتخاب کنید.</div><button class="btn" onclick="document.querySelectorAll(\'.nav button\')[1].click()">مشاهده محصولات</button></article><article class="card"><h3>⚡ سریع و گرافیکی</h3><div class="muted">این Mini App برای استفاده مستقیم داخل Telegram طراحی شده است.</div></article>'}}catch(e){c.innerHTML='<div class="card empty">خطا در دریافت اطلاعات.</div>'}finally{c.classList.remove('loading')}}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
-async function buy(id){alert('مرحله خرید در ادامه توسعه 2.0.0 به همین Mini App متصل می‌شود. محصول #'+id)}
+async function buy(id){
+ try{
+ const r=await fetch('/api/order',{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Init-Data':tg?tg.initData:''},body:JSON.stringify({product_id:id})});
+ const d=await r.json();
+ alert(d.message||'سفارش ثبت شد');
+ }catch(e){alert('خطا در ثبت سفارش')}
+}
 render();
 </script></body></html>'''
 
@@ -99,6 +105,39 @@ def me():
         return jsonify({'user':{'id':uid,'username':user.get('username',''),'first_name':user.get('first_name','')},'balance':row[0] if row else 0,'authenticated':True})
     except Exception:
         return jsonify({'user':None,'balance':0,'authenticated':False})
+
+
+@app.get('/api/categories')
+def categories():
+    try:
+        with db() as c:
+            rows=c.execute("SELECT id,name FROM categories ORDER BY id DESC").fetchall()
+        return jsonify({'categories':[{'id':r[0],'name':r[1]} for r in rows]})
+    except Exception:
+        return jsonify({'categories':[]})
+
+@app.post('/api/order')
+def create_order_mini():
+    try:
+        init_data=request.headers.get('X-Telegram-Init-Data','')
+        if not telegram_init_data_valid(init_data):
+            return jsonify({'message':'لطفاً Mini App را از داخل Telegram باز کنید.'}),401
+        data=dict(urllib.parse.parse_qsl(init_data,keep_blank_values=True))
+        user=json.loads(data.get('user','{}')); uid=int(user['id'])
+        body=request.get_json(silent=True) or {}
+        pid=int(body.get('product_id',0))
+        with db() as c:
+            product=c.execute('SELECT name,price FROM products WHERE id=? AND active=1',(pid,)).fetchone()
+            if not product:
+                return jsonify({'message':'محصول پیدا نشد'}),404
+            cols=[x[1] for x in c.execute('PRAGMA table_info(orders)').fetchall()]
+            if 'status' in cols:
+                c.execute("INSERT INTO orders(user_id,product_id,status) VALUES(?,?,?)",(uid,pid,'pending'))
+            else:
+                c.execute("INSERT INTO orders(user_id,product_id) VALUES(?,?)",(uid,pid))
+        return jsonify({'ok':True,'message':'سفارش ثبت شد. ادامه پرداخت از طریق ربات انجام می‌شود.'})
+    except Exception as e:
+        return jsonify({'message':'خطا در ثبت سفارش','error':str(e)[:100]}),500
 
 
 def start_mini_app_server():
