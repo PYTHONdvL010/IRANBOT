@@ -2656,14 +2656,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
     try:
         from web_panel import start_web_server
-        threading.Thread(target=start_web_server, daemon=True, name="web-panel-8080").start()
+        threading.Thread(target=start_web_server, daemon=True).start()
     except Exception as e:
         print("Web panel start failed:", e)
-    try:
-        from mini_app import start_mini_app_server
-        threading.Thread(target=start_mini_app_server, daemon=True, name="mini-app-8081").start()
-    except Exception as e:
-        print("Mini App start failed:", e)
     app.run_polling()
 
 
