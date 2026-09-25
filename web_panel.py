@@ -69,7 +69,7 @@ input,textarea,select{width:100%;background:#081625;color:#fff;border:1px solid 
 {% if session.get('admin_id') %}<div class="app">
 <aside class="sidebar"><button class="sidebar-toggle" type="button" aria-label="باز و بسته کردن منو" onclick="toggleSidebar()">☰</button><div class="brand"><div class="logo">⚡</div><div><h1>IRANBOT</h1><span class="version">پنل مدیریت · v{{version}}</span></div></div>
 <div class="side-label">مدیریت</div><nav class="nav">
-<a href="{{url_for('dashboard')}}">🏠 <span>داشبورد</span></a><a href="{{url_for('users')}}">👥 <span>کاربران</span></a><a href="{{url_for('welcome')}}">👋 <span>خوش‌آمد</span></a><a href="{{url_for('mandatory')}}">📢 <span>عضویت اجباری</span></a><a href="{{url_for('finance')}}">💳 <span>مالی</span></a><a href="{{url_for('finance_report_web')}}">📊 <span>گزارش مالی</span></a><a href="{{url_for('panels')}}">🖥 <span>پنل‌ها</span></a><a href="{{url_for('products')}}">🛒 <span>محصولات</span></a><a href="{{url_for('orders')}}">📦 <span>سفارش‌ها</span></a><a href="{{url_for('free_tests')}}">🎁 <span>تست رایگان</span></a><a href="{{url_for('discount')}}">🏷 <span>تخفیف</span></a><a href="{{url_for('raffle')}}">🎟 <span>قرعه‌کشی</span></a><a href="{{url_for('backup')}}">💾 <span>پشتیبان‌گیری</span></a><a href="{{url_for('activity_log')}}">🕘 <span>گزارش فعالیت</span></a><a href="{{url_for('settings_web')}}">⚙️ <span>تنظیمات</span></a>
+<a href="{{url_for('dashboard')}}">🏠 <span>داشبورد</span></a><a href="{{url_for('users')}}">👥 <span>کاربران</span></a><a href="{{url_for('welcome')}}">👋 <span>خوش‌آمد</span></a><a href="{{url_for('mandatory')}}">📢 <span>عضویت اجباری</span></a><a href="{{url_for('finance')}}">💳 <span>مالی</span></a><a href="{{url_for('finance_report_web')}}">📊 <span>گزارش مالی</span></a><a href="{{url_for('panels')}}">🖥 <span>پنل‌ها</span></a><a href="{{url_for('products')}}">🛒 <span>محصولات</span></a><a href="{{url_for('orders')}}">📦 <span>سفارش‌ها</span></a><a href="{{url_for('free_tests')}}">🎁 <span>تست رایگان</span></a><a href="{{url_for('discount')}}">🏷 <span>تخفیف</span></a><a href="{{url_for('raffle')}}">🎟 <span>قرعه‌کشی</span></a><a href="{{url_for('mini_app_settings')}}">📱 <span>Mini App</span></a><a href="{{url_for('backup')}}">💾 <span>پشتیبان‌گیری</span></a><a href="{{url_for('activity_log')}}">🕘 <span>گزارش فعالیت</span></a><a href="{{url_for('settings_web')}}">⚙️ <span>تنظیمات</span></a>
 </nav><div class="side-bottom"><a class="logout" href="{{url_for('logout')}}">خروج از حساب ↪</a></div></aside><div class="sidebar-overlay" onclick="closeMobileSidebar()"></div>
 <main class="main"><header class="topbar"><div><div class="top-title">داشبورد مدیریت IRANBOT</div><div class="top-sub">کنترل فروش، کاربران، پرداخت‌ها و سرویس‌ها در یک نگاه</div></div><div class="top-actions"><button class="icon-btn" type="button" onclick="openCommandPalette()" title="Ctrl+K">⌕ <span>جستجوی سریع</span></button><button class="icon-btn notif-btn" type="button" onclick="toggleNotifications()">🔔<b id="notifCount">0</b></button><span class="pill">🟢 سیستم فعال</span><button class="btn dark menu-toggle" type="button" onclick="toggleMobileSidebar()">☰ منو</button></div></header>
 <section class="content">{% with msgs=get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}<div class="muted small" style="margin:28px 2px 0;text-align:center">IRANBOT — نسخه {{version}} — ساخته شده توسط PYTHONdvL010</div></section></main></div>
@@ -1082,6 +1082,45 @@ def raffle_edit_web(rid):
             flash('✅ قرعه‌کشی ویرایش شد.'); return redirect(url_for('raffle'))
     b="""<div class='card'><h2>✏️ ویرایش قرعه‌کشی #{{row[0]}}</h2><form method='post'><label>نوع جایزه</label><select name='prize_type'><option value='money' {% if row[1]=='money' %}selected{% endif %}>💰 نقدی</option><option value='item' {% if row[1]=='item' %}selected{% endif %}>🎁 غیرنقدی</option></select><label>اسم جایزه</label><input name='prize_name' value='{{row[2]}}'><label>مبلغ / ارزش جایزه</label><input name='prize_amount' type='number' min='0' value='{{row[3]}}' required><label>هزینه ثبت‌نام</label><input name='entry_fee' type='number' min='0' value='{{row[4]}}' required><label>حداکثر شرکت‌کننده (1 تا 30)</label><input name='max_participants' type='number' min='1' max='30' value='{{row[5]}}' required><button>💾 ذخیره تغییرات</button> <a class='btn dark' href='{{url_for('raffle')}}'>لغو</a></form></div>"""
     return page(b,row=row)
+
+@app.route('/mini-app',methods=['GET','POST'])
+@admin_required
+def mini_app_settings():
+    if request.method=='POST':
+        action=request.form.get('action','save')
+        if action=='save':
+            url=request.form.get('mini_app_url','').strip().rstrip('/')
+            enabled='1' if request.form.get('enabled')=='1' else '0'
+            if url and not re.match(r'^https://', url, re.I):
+                flash('❌ آدرس Mini App باید HTTPS باشد تا برای Telegram قابل استفاده باشد.')
+            else:
+                set_setting('mini_app_url', url)
+                set_setting('mini_app_enabled', enabled)
+                flash('✅ تنظیمات Mini App ذخیره شد.')
+        elif action=='test':
+            import urllib.request
+            url=request.form.get('mini_app_url','').strip().rstrip('/')
+            if not url:
+                url=setting('mini_app_url','')
+            try:
+                with urllib.request.urlopen(url+'/health', timeout=6) as r:
+                    data=r.read().decode('utf-8','ignore')
+                if r.status==200:
+                    flash('🟢 Mini App در دسترس است و پاسخ Health دریافت شد.')
+                else:
+                    flash(f'🟠 Mini App پاسخ HTTP {r.status} داد.')
+            except Exception as e:
+                flash('🔴 اتصال Mini App برقرار نشد: '+str(e)[:180])
+        return redirect(url_for('mini_app_settings'))
+    url=setting('mini_app_url','')
+    enabled=setting('mini_app_enabled','1')=='1'
+    port=8081
+    b="""<div class='hero'><h2>📱 مدیریت Mini App</h2><p>کنترل اتصال، فعال/غیرفعال بودن و آدرس Mini App. سرویس Mini App روی پورت داخلی 8081 اجرا می‌شود و Web Panel روی پورت 8080 باقی می‌ماند.</p></div>
+    <div class='grid'><div class='statcard'><div class='staticon'>📡</div><div class='statlabel'>پورت Mini App</div><div class='stat'>8081</div><div class='kpi'>Web Panel: 8080</div></div><div class='statcard'><div class='staticon'>🟢</div><div class='statlabel'>وضعیت</div><div class='stat'>{{'فعال' if enabled else 'خاموش'}}</div><div class='kpi'>قابل کنترل از همین صفحه</div></div></div>
+    <div class='card'><h3>🔗 اتصال Mini App</h3><form method='post'><input type='hidden' name='action' value='save'><label>آدرس عمومی Mini App</label><input name='mini_app_url' value='{{url}}' placeholder='https://your-mini-app-domain.example' autocomplete='off'><label class='row' style='margin:12px 0'><input style='width:auto' type='checkbox' name='enabled' value='1' {{'checked' if enabled else ''}}> فعال بودن Mini App</label><div class='actions'><button>💾 ذخیره اتصال</button></div></form></div>
+    <div class='card'><h3>🧪 تست اتصال</h3><p class='muted'>بعد از Deploy و قرار دادن URL عمومی، دکمه زیر مسیر <code>/health</code> را تست می‌کند.</p><form method='post'><input type='hidden' name='action' value='test'><input name='mini_app_url' value='{{url}}' placeholder='https://...'><button class='btn blue' style='margin-top:8px'>🔌 تست اتصال</button></form></div>
+    <div class='card'><h3>🤖 اتصال به Telegram</h3><p class='muted'>بعد از Deploy، URL عمومی HTTPS را در BotFather به‌عنوان Main Mini App ثبت کن. همین URL را می‌توانی از Web Panel ذخیره و تست کنی.</p>{% if url %}<div class='row'><input readonly value='{{url}}' style='flex:1'><button type='button' onclick='navigator.clipboard.writeText({{url|tojson}})'>📋 کپی URL</button></div>{% endif %}<div class='muted small' style='margin-top:10px'>نسخه پروژه فعلاً {{version}} است و در این مرحله تغییر نمی‌کند.</div></div>"""
+    return page(b,url=url,enabled=enabled,version=VERSION)
 
 @app.route('/discount',methods=['GET','POST'])
 @admin_required
