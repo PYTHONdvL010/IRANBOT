@@ -572,8 +572,8 @@ def dashboard():
             label=dt.strftime('%m/%d')
             n=c.execute("SELECT COUNT(*) FROM orders WHERE date(created_at)=date(?)",(dt.strftime('%Y-%m-%d'),)).fetchone()[0]
             daily.append((label,n))
-    max_orders=max([x[1] for x in daily] or [1])
-    bars=[(label,round((n/max_orders)*100)) for label,n in daily]
+    max_orders=max([x[1] for x in daily] or [0])
+    bars=[(label,round((n/max_orders)*100)) for label,n in daily] if max_orders > 0 else [(label,0) for label,n in daily]
     b='''<div class="hero"><h2>خوش اومدی 👋</h2><p>نمای کلی فروشگاه را اینجا می‌بینی؛ از وضعیت سفارش‌ها تا کاربران، درآمد و فعالیت هفت روز اخیر.</p></div>
     <div class="grid" style="margin-bottom:16px">
       <div class="statcard"><div class="staticon">👥</div><div class="statlabel">کاربران</div><div class="stat">{{users}}</div><div class="kpi">حساب‌های ثبت‌شده</div></div>
